@@ -7,6 +7,8 @@
 - [ ] Confirm the MultiChallenge summary-generation artifact/procedure.
 - [ ] Confirm the redistributable preparation path for MathVista captions/OCR.
 - [ ] Run the GPU smoke test with vLLM 0.19.0 after clean installation.
-- [ ] Run secret and dependency scans on the final candidate.
+- [x] Run static secret-pattern and dependency scans on the candidate.
+- [ ] Resolve or formally accept advisories caused by the vLLM 0.19.0
+  compatibility pin; keep the repository private until this is reviewed.
 - [ ] Obtain collaborator/compliance approval for the exact release commit.
 - [ ] Change repository visibility from private to public.

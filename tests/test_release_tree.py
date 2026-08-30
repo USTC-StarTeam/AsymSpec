@@ -1,10 +1,22 @@
 from pathlib import Path
+import os
 import re
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 TEXT_SUFFIXES = {".py", ".sh", ".md", ".yaml", ".yml", ".txt"}
+
+
+def release_files():
+    for directory, subdirs, filenames in os.walk(ROOT):
+        subdirs[:] = [
+            name for name in subdirs
+            if name not in {".git", "__pycache__", ".venv"}
+        ]
+        base = Path(directory)
+        for filename in filenames:
+            yield base / filename
 
 
 class ReleaseTreeTest(unittest.TestCase):
@@ -18,7 +30,7 @@ class ReleaseTreeTest(unittest.TestCase):
     def test_no_machine_specific_paths(self):
         forbidden = ["/root/dataDisk", "/mnt/disk0", "/mnt/src/", "PPTAgent/"]
         failures = []
-        for path in ROOT.rglob("*"):
+        for path in release_files():
             if not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:
                 continue
             if path.resolve() == Path(__file__).resolve():
@@ -37,7 +49,7 @@ class ReleaseTreeTest(unittest.TestCase):
             re.compile(r"BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY"),
         ]
         failures = []
-        for path in ROOT.rglob("*"):
+        for path in release_files():
             if not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:
                 continue
             if path.resolve() == Path(__file__).resolve():
@@ -50,8 +62,9 @@ class ReleaseTreeTest(unittest.TestCase):
     def test_no_large_release_artifacts(self):
         large = [
             str(path.relative_to(ROOT))
-            for path in ROOT.rglob("*")
-            if path.is_file() and path.stat().st_size > 5 * 1024 * 1024
+            for path in release_files()
+            if path.is_file()
+            and path.stat().st_size > 5 * 1024 * 1024
         ]
         self.assertEqual(large, [])
 

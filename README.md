@@ -41,6 +41,11 @@ implementation identifier. Public method names and reported results use
 The patches target **vLLM 0.19.0**. Newer versions may change the patched
 interfaces.
 
+This compatibility pin has known security advisories in vLLM and transitive
+dependencies. Treat this repository as an offline research artifact: use an
+isolated environment, trusted inputs and weights, and do not expose the
+patched runtime as a public inference service. See [`SECURITY.md`](SECURITY.md).
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate

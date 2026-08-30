@@ -1,4 +1,6 @@
+# Compatibility pin for the released research patches; see SECURITY.md.
 vllm==0.19.0
+setuptools>=83.0.0
 transformers
 accelerate
 sentencepiece
@@ -13,3 +15,11 @@ openai
 tqdm
 requests
 beautifulsoup4
+pillow
+python-docx
+python-pptx
+pypdf
+openpyxl
+rank-bm25
+rouge
+openai-whisper
