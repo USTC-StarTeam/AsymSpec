@@ -320,8 +320,8 @@ def cfg_d_classical(samples, out_path, K=2):
     return outs
 
 
-def cfg_ss(samples, out_path, K=2, beta=0.5, gamma=0.6,
-           asym_method="gamma_rule",
+def cfg_ss(samples, out_path, K=4, beta=1.0, gamma=0.5,
+           asym_method="jsd",
            ar_target=1.5, ar_lambda=3.0, ar_alpha=0.5, ar_init=0.5,
            beta_clip=(0.5, 3.0)):
     print(f"\n=== CFG SS: SpecSteer multimodal (v0.10.mm) K={K} β={beta} γ={gamma} method={asym_method} ===")

@@ -20,7 +20,7 @@
 # Integration checklist:
 #
 # [x] A. SpeculativeConfig.method == "specsteer" + sub-fields
-#         {specsteer_beta: float = 1.0, specsteer_gamma: float = 0.6}
+#         {specsteer_beta: float = 1.0, specsteer_gamma: float = 0.5}
 #      in vllm/config/speculative.py. vllm/config/vllm.py async-scheduling
 #      allowlist updated. verify_equal_vocab_size_if_draft_model() and
 #      uses_draft_model() both include specsteer.
@@ -408,7 +408,7 @@ class SpecSteerProposer(DraftModelProposer):
             self.speculative_config, "specsteer_beta", 1.0,
         )
         self.gamma: float = getattr(
-            self.speculative_config, "specsteer_gamma", 0.6,
+            self.speculative_config, "specsteer_gamma", 0.5,
         )
         # Per-step ring buffer: list of [batch_size, vocab_size] tensors,
         # one per drafted token position. Reset at the start of each propose().

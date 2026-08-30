@@ -45,7 +45,7 @@ def specsteer_greedy_sample(
     base_logits: torch.Tensor,
     bonus_token_ids: torch.Tensor,
     beta: float = 1.0,
-    gamma: float = 0.6,
+    gamma: float = 0.5,
 ) -> torch.Tensor:
     """Greedy γ-rule + δ-fusion with optional CMA/JSD acceptance.
 

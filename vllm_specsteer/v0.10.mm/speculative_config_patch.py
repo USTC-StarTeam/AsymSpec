@@ -197,7 +197,7 @@ class SpeculativeConfig:
     """SpecSteer δ-fusion strength: emitted_logits = verifier + β·δ on
     rejection path. Default 1.0 matches paper headline."""
 
-    specsteer_gamma: float = 0.6
+    specsteer_gamma: float = 0.5
     """SpecSteer acceptance threshold base (for fixed-γ baseline; CDA gate
     derives γ_eff = γ·exp(-D) from this)."""
 

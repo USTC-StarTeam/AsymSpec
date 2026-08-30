@@ -58,6 +58,9 @@ def main():
     ap.add_argument("--K", type=int, default=2)
     ap.add_argument("--gamma", type=float, default=0.5)
     ap.add_argument("--beta", type=float, default=1.0)
+    ap.add_argument("--asym_method", default="jsd",
+                    choices=["jsd", "jsd_pos", "gamma_rule", "cma",
+                             "cma_vnorm", "cma_hbase"])
     ap.add_argument("--main_compression", default="llmlingua",
                     choices=["truncate", "llmlingua", "none"])
     ap.add_argument("--skip_system_compress", type=lambda s: s.lower() == "true",

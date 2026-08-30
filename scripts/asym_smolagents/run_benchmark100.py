@@ -61,7 +61,7 @@ def build_model(mode: str, args):
         return AsymSpecVLLMModel(
             model_id=args.llm, drafter_id=args.drafter,
             K=args.K, gamma=args.gamma, beta=args.beta,
-            asym_method="jsd",
+            asym_method=args.asym_method,
             main_compression=args.main_compression,
             model_kwargs=common_kwargs,
         )
@@ -129,7 +129,7 @@ def build_model_v2(mode: str, args):
         return AsymSpecVLLMModel(
             model_id=args.llm, drafter_id=args.drafter,
             K=args.K, gamma=args.gamma, beta=args.beta,
-            asym_method="cma_vnorm",
+            asym_method=args.asym_method,
             main_compression=args.main_compression,
             skip_system_compress=args.skip_system_compress,
             llmlingua_rate=llmlingua_rate,
@@ -177,6 +177,9 @@ def main():
     ap.add_argument("--K", type=int, default=2)
     ap.add_argument("--gamma", type=float, default=0.5)
     ap.add_argument("--beta", type=float, default=1.0)
+    ap.add_argument("--asym_method", default="jsd",
+                    choices=["jsd", "jsd_pos", "gamma_rule", "cma",
+                             "cma_vnorm", "cma_hbase"])
     ap.add_argument("--main_compression", default="llmlingua",
                     choices=["truncate", "llmlingua", "none"])
     ap.add_argument("--skip_system_compress", type=lambda s: s.lower() == "true",

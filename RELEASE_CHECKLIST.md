@@ -4,6 +4,8 @@
 - [x] Exclude caches, raw outputs, datasets, weights, credentials, and archives.
 - [x] Record authorship, license, and source provenance.
 - [x] Align public CLI defaults with the camera-ready configuration.
+- [x] Add static CI, paper-default regression tests, and asset preflight.
+- [x] Record the vLLM migration boundary and reject incompatible patching.
 - [ ] Confirm the MultiChallenge summary-generation artifact/procedure.
 - [ ] Confirm the redistributable preparation path for MathVista captions/OCR.
 - [ ] Run the GPU smoke test with vLLM 0.19.0 after clean installation.

@@ -39,7 +39,8 @@ implementation identifier. Public method names and reported results use
 ## Environment
 
 The patches target **vLLM 0.19.0**. Newer versions may change the patched
-interfaces.
+interfaces; see [`VLLM_COMPATIBILITY.md`](VLLM_COMPATIBILITY.md) for the
+source-level migration assessment.
 
 This compatibility pin has known security advisories in vLLM and transitive
 dependencies. Treat this repository as an offline research artifact: use an
@@ -74,6 +75,12 @@ MultiChallenge:
 ```bash
 python scripts/gen_lb_summaries.py
 python scripts/gen_mc_summaries.py
+```
+
+Check that the local benchmark inputs are ready before launching a GPU job:
+
+```bash
+python scripts/check_assets.py --benchmark all
 ```
 
 MathVista additionally expects the official Bard captions and EasyOCR output
@@ -133,7 +140,14 @@ python scripts/bench_mathvista.py --cfg ss --K 4 --beta 1.0 \
 The agentic entry points are
 `scripts/asym_smolagents/run_gaia_web.py` and
 `scripts/asym_smolagents/run_benchmark100.py` (SimpleQA). Their defaults match
-the paper: LLMLingua-2 ratio 0.3, two recent turns retained, and `K=2`.
+the paper: CDA via `jsd`, LLMLingua-2 ratio 0.3, two recent turns retained,
+and `K=2`.
+
+Run the dependency-light release checks with:
+
+```bash
+bash scripts/check_release.sh
+```
 
 ## Cross-family portability
 

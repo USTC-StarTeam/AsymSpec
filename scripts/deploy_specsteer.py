@@ -23,6 +23,7 @@ Usage:
 """
 import argparse
 import hashlib
+import importlib.metadata
 import shutil
 import sys
 from pathlib import Path
@@ -31,6 +32,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from paths import REPO_ROOT, vllm_specsteer_targets
 
 VLLM_SPECSTEER = REPO_ROOT / "vllm_specsteer"
+SUPPORTED_VLLM_VERSION = "0.19.0"
+
+
+def validate_vllm_version() -> str:
+    """Reject full-file patching against an incompatible vLLM layout."""
+    try:
+        installed = importlib.metadata.version("vllm")
+    except importlib.metadata.PackageNotFoundError as exc:
+        raise RuntimeError(
+            "vLLM is not installed. Install the pinned requirements first."
+        ) from exc
+    if installed != SUPPORTED_VLLM_VERSION:
+        raise RuntimeError(
+            f"Installed vLLM is {installed}, but these full-file patches target "
+            f"vLLM {SUPPORTED_VLLM_VERSION}. Refusing to overwrite an "
+            "incompatible installation; see VLLM_COMPATIBILITY.md."
+        )
+    return installed
 
 
 def md5_short(path: Path) -> str:
@@ -77,10 +96,12 @@ def deployment_map(version: str) -> list[tuple[Path, Path]]:
 
 
 def cmd_check(version: str) -> None:
+    installed = validate_vllm_version()
     print(f"Version:  {version}")
+    print(f"vLLM:     {installed} (supported)")
     print(f"Source:   {(VLLM_SPECSTEER / version).relative_to(REPO_ROOT)}/")
     pairs = deployment_map(version)
-    print(f"vLLM:     {pairs[0][1].parents[2]}/\n")
+    print(f"Package:  {pairs[0][1].parents[2]}/\n")
     for src, tgt in pairs:
         s_md5 = md5_short(src) if src.exists() else "MISSING   "
         t_md5 = md5_short(tgt) if tgt.exists() else "MISSING   "
@@ -91,6 +112,7 @@ def cmd_check(version: str) -> None:
 
 
 def cmd_apply(version: str, backup_dir: Path) -> None:
+    validate_vllm_version()
     pairs = deployment_map(version)
     backup_dir.mkdir(parents=True, exist_ok=True)
     deployed = 0
@@ -122,6 +144,7 @@ def cmd_apply(version: str, backup_dir: Path) -> None:
 
 
 def cmd_revert(version: str, backup_dir: Path) -> None:
+    validate_vllm_version()
     if not backup_dir.exists():
         print(f"✗  No backup at {backup_dir}")
         return
@@ -148,12 +171,16 @@ def main():
 
     backup_dir = REPO_ROOT / ".backups" / f"vllm_specsteer_{args.ver}"
 
-    if args.check:
-        cmd_check(args.ver)
-    elif args.apply:
-        cmd_apply(args.ver, backup_dir)
-    elif args.revert:
-        cmd_revert(args.ver, backup_dir)
+    try:
+        if args.check:
+            cmd_check(args.ver)
+        elif args.apply:
+            cmd_apply(args.ver, backup_dir)
+        elif args.revert:
+            cmd_revert(args.ver, backup_dir)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

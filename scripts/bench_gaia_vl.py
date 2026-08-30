@@ -281,7 +281,7 @@ def cfg_c_main_q(samples, out_path):
 
 # ---------- CFG SS: VL drafter (image) + text verifier (blind) ----------
 def cfg_ss(samples, out_path, K=2, beta=1.0, gamma=0.5,
-           asym_method="cma_vnorm"):
+           asym_method="jsd"):
     print(f"\n=== CFG SS: VL drafter + text verifier  K={K} β={beta} γ={gamma} method={asym_method} ===", flush=True)
     from vllm import LLM, SamplingParams
     from transformers import AutoProcessor

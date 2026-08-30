@@ -16,6 +16,8 @@ Control where weights live by setting ``HF_HOME`` / ``HF_HUB_CACHE``.
 Dataset paths point at gitignored files; populate them via
 ``scripts/download_datasets.sh`` or override ``ASYMSPEC_DATA_DIR``.
 """
+from __future__ import annotations
+
 import os
 from pathlib import Path
 

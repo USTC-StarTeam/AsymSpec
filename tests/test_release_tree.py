@@ -24,6 +24,7 @@ class ReleaseTreeTest(unittest.TestCase):
         for name in [
             "README.md", "LICENSE", "NOTICE", "AUTHORS.md",
             "CITATION.cff", "RELEASE_PROVENANCE.md", "requirements.txt",
+            "VLLM_COMPATIBILITY.md",
         ]:
             self.assertTrue((ROOT / name).is_file(), name)
 
