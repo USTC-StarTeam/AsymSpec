@@ -1,0 +1,21 @@
+# Copy to conf.yaml and fill in your own credentials. Never commit conf.yaml.
+#
+# Read by api_key_util.py (LLM-judge + VL-captioning clients). Any
+# OpenAI-compatible endpoint works. Only the sections below are used by
+# this repo:
+#   BASIC_MODEL  — MultiChallenge judge (JUDGE_MODEL env can override model)
+#   VISION_MODEL — MathVista / GAIA-VL captioning
+
+BASIC_MODEL:
+  base_url: https://api.openai.com/v1
+  model: "gpt-4o-2024-08-06"
+  api_key: YOUR_KEY_HERE
+  max_retries: 50
+  temperature: 0.0
+  timeout: 300000
+
+VISION_MODEL:
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  model: qwen-vl-plus-latest
+  api_key: YOUR_KEY_HERE
+  token_limit: 10000

@@ -1,0 +1,52 @@
+cff-version: 1.2.0
+message: "If you use AsymSpec, please cite our EMNLP 2026 paper."
+title: "AsymSpec: Context-Asymmetric Speculative Decoding for Agentic LLMs"
+type: software
+authors:
+  - family-names: Liang
+    given-names: Sheng
+    email: liangsheng16@huawei.com
+  - family-names: Zhang
+    given-names: Yongyue
+    email: zhangyongyue1@h-partners.com
+  - family-names: Brian
+    given-names: Nathanael
+    email: nathanael.brian@h-partners.com
+  - family-names: Lv
+    given-names: Hang
+    email: lvhang1001@mail.ustc.edu.cn
+  - family-names: Wang
+    given-names: Hao
+    email: wanghao3@ustc.edu.cn
+  - family-names: Zhang
+    given-names: Chen
+    email: zhang.chen4@huawei.com
+  - family-names: Liu
+    given-names: Yong
+    email: liu.yong6@huawei.com
+repository-code: "https://github.com/LesterLv/AsymSpec"
+url: "https://arxiv.org/abs/2608.26004"
+license: Apache-2.0
+version: 0.1.0-rc1
+date-released: 2026-08-30
+preferred-citation:
+  type: article
+  title: "AsymSpec: Context-Asymmetric Speculative Decoding for Agentic LLMs"
+  authors:
+    - family-names: Liang
+      given-names: Sheng
+    - family-names: Zhang
+      given-names: Yongyue
+    - family-names: Brian
+      given-names: Nathanael
+    - family-names: Lv
+      given-names: Hang
+    - family-names: Wang
+      given-names: Hao
+    - family-names: Zhang
+      given-names: Chen
+    - family-names: Liu
+      given-names: Yong
+  year: 2026
+  journal: "Proceedings of the 2026 Conference on Empirical Methods in Natural Language Processing"
+  url: "https://arxiv.org/abs/2608.26004"

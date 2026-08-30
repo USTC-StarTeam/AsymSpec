@@ -1,0 +1,43 @@
+paper: "AsymSpec: Context-Asymmetric Speculative Decoding for Agentic LLMs"
+verifier: Qwen/Qwen3-32B
+decoding:
+  temperature: 0.0
+  beta: 1.0
+  gamma: 0.5
+  cda_method: jsd
+  thinking: false
+benchmarks:
+  longbench:
+    drafter: Qwen/Qwen3-4B
+    K: 2
+    max_new_tokens: 1024
+    main_context: summary
+  multichallenge:
+    drafter: Qwen/Qwen3-4B
+    K: 2
+    max_new_tokens: 2000
+    main_context: summary_last_k
+    keep_last_k: 1
+    n: 271
+  api_bank:
+    drafter: Qwen/Qwen3-1.7B
+    K: 2
+    max_new_tokens: 256
+    main_compression: name_sig
+  mathvista:
+    drafter: Qwen/Qwen3-VL-2B-Instruct
+    K: 4
+    max_new_tokens: 1024
+  gaia:
+    drafter: Qwen/Qwen3-4B
+    K: 2
+    compression: llmlingua
+    compression_ratio: 0.3
+    keep_last_k: 2
+  simpleqa:
+    drafter: Qwen/Qwen3-4B
+    K: 2
+    compression: llmlingua
+    compression_ratio: 0.3
+    keep_last_k: 2
+    n: 500
