@@ -174,9 +174,9 @@ class SpecDecodeBaseProposer:
         )
 
         if self.needs_extra_input_slots:
-            pass  # v0.10.mm: bypassed for VL drafter
-            pass  # v0.10.mm: bypassed for VL drafter
-            pass  # v0.10.mm: bypassed for VL drafter
+            pass  # bypassed for the multimodal drafter
+            pass  # bypassed for the multimodal drafter
+            pass  # bypassed for the multimodal drafter
 
         self.is_rejected_token_mask: torch.Tensor | None = None
         self.is_masked_token_mask: torch.Tensor | None = None

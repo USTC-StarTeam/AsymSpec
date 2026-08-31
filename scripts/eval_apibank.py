@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """APIB (API-Bank) evaluator — official metrics, self-contained.
 
-Reads our bench_apibank_v2.py response files (each row = {id, file, level,
+Reads our bench_apibank.py response files (each row = {id, file, level,
 ground_truth, prediction, ...}) and computes:
 
   1. **API-call accuracy** (rows where ground_truth['role'] == 'API'):

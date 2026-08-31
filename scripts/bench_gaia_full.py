@@ -48,8 +48,8 @@ TEXT_PATH   = "Qwen/Qwen3-32B"
 DRAFTER_PATH = "Qwen/Qwen3-4B"
 VL_PATH     = "Qwen/Qwen3-VL-2B-Instruct"
 
-OUT_DIR = f"{_REPO}/experiments/gaia_full_2026-05-25"
-CAPTION_PATH = f"{_REPO}/experiments/gaia_vl_2026-05-24/captions.json"
+OUT_DIR = f"{_REPO}/outputs/gaia_full"
+CAPTION_PATH = f"{_REPO}/outputs/gaia_vl/captions.json"
 
 COT_SUFFIX = "\nThink step by step, then provide the final answer after 'Answer:'."
 

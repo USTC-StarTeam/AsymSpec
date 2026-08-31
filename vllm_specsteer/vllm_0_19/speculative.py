@@ -192,7 +192,7 @@ class SpeculativeConfig:
     positions equals this value. Only used when rejection_sample_method
     is 'synthetic'. Must be in [0, 1]."""
 
-    # SpecSteer (AsymSpec) configuration — added by v0.10.mm patch
+    # AsymSpec configuration (legacy internal name: SpecSteer).
     specsteer_beta: float = 1.0
     """SpecSteer δ-fusion strength: emitted_logits = verifier + β·δ on
     rejection path. Default 1.0 matches paper headline."""

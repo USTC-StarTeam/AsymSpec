@@ -4,14 +4,11 @@ This directory contains the implementation used by the AsymSpec experiments.
 The internal `specsteer` module name predates the final paper title and is
 retained to avoid a risky mass rename of the vLLM integration surface.
 
-## Versions
+## Patch set
 
-- `v0.10.mm/`: current implementation for vLLM 0.19.0, including multimodal
-  drafter support. This is the default deployed version.
-- `v0.10/`: text-only implementation retained as a smaller reference.
-
-The multimodal version is a strict superset of the text-only path. Use
-`scripts/deploy_specsteer.py`; do not copy files manually.
+`vllm_0_19/` is the single release patch set for vLLM 0.19.0. It supports
+both text and multimodal drafters. Use `scripts/deploy_specsteer.py`; do not
+copy files manually.
 
 ```bash
 python scripts/deploy_specsteer.py --check

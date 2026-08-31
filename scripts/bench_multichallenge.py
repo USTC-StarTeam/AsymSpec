@@ -1,15 +1,8 @@
-"""MC bench — vLLM SpecSteer v0.7, K-swept, paths fixed for specsteer-baseline.
+"""MultiChallenge benchmark harness for AsymSpec and its baselines.
 
-Adapted from the v0.6 frozen bench (archived as
-backup/legacy_v06_bench/bench_mc_real.v0.6_frozen.py) with:
-  1. --K arg replaces hardcoded num_speculative_tokens=2 (applies to both
-     specsteer and classical_sps_aug speculative_config dicts).
-  2. MC dataset path → specsteer-baseline/data/multi-challenge/.
-  3. Summary cache path → specsteer-baseline/v5_vllm/cache/.
-  4. --out / --responses CLI flags (was hardcoded to /tmp/mc_real_*).
-  5. Decodes outputs to JSONL at end for downstream judge.
-  6. Logs SHA256 of live specsteer_model.py for traceability (which v0.7?).
-  7. Captures per-cell config snapshot inside the metrics JSON.
+The harness supports configurable draft length and batch size, records the
+active integration hashes for traceability, and writes both metrics and
+decoded responses for downstream LLM-judge evaluation.
 
 Modes:
   b1_aug             — LLM only on full conversation.
@@ -38,7 +31,7 @@ ap.add_argument("--mode", required=True,
                 help="b1_drafter_aug=drafter(SLM) alone on the full "
                      "conversation (B1); "
                      "classical_sps_main=classical SD with verifier+drafter "
-                     "both on the COMPRESSED context (Phase 2.1 fair-cost "
+                     "both on the COMPRESSED context (fair-cost "
                      "compressed-SD baseline); "
                      "scd=Speculative Contrastive Decoding baseline, "
                      "expert(32B)/amateur(SLM) on the SAME main context (B3)")
@@ -71,9 +64,7 @@ ap.add_argument("--cell", required=True, help="Cell id, used in logs only")
 ap.add_argument("--out", required=True, help="Output JSON path (metrics + tokens)")
 ap.add_argument("--responses", required=True, help="Output JSONL path (decoded text)")
 ap.add_argument("--bs", type=int, default=1,
-                help="Batch size: number of prompts per llm.generate() call. "
-                     "Default 1 = single-stream (matches v0.7 behavior). "
-                     "Requires v0.8 specsteer_model.py for BS>1 support.")
+                help="Batch size: number of prompts per llm.generate() call.")
 ap.add_argument("--enforce_eager", action="store_true",
                 help="Disable CUDA graph capture entirely (last-resort).")
 ap.add_argument("--max_cudagraph_size", type=int, default=128,
@@ -210,7 +201,7 @@ def build_prompts(mode):
             aug = None
         elif mode in ("b1_main", "b1_drafter_main", "classical_sps_main"):
             # b1_drafter_main: SLM alone on the COMPRESSED context (B4).
-            # classical_sps_main: 32B + SLM both on compressed (Phase 2.1).
+            # classical_sps_main: 32B + SLM both on compressed context.
             p = tok.apply_chat_template(msg_main, tokenize=False,
                                           add_generation_prompt=True,
                                           enable_thinking=False)
@@ -367,10 +358,8 @@ prompt_lens = {}        # idx → prompt token count
 per_prompt_elapsed = {} # idx → wall seconds for this generate() call
 t0 = time.perf_counter()
 
-# Iteration: chunk prompts by --bs. Single code path — at bs=1 each chunk
-# is a 1-element list, llm.generate(reqs=[1 item], sps=[1 item]) is the
-# same internal call as v0.7's `llm.generate([{ids}], sp)` (vLLM wraps a
-# single SamplingParams to per-req anyway).
+# Iteration: chunk prompts by --bs. At bs=1, each chunk is a one-element list;
+# vLLM applies the single SamplingParams object to that request.
 def _chunk(seq, n):
     for i in range(0, len(seq), n):
         yield seq[i:i + n]

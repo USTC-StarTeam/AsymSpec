@@ -13,8 +13,8 @@ Final metrics (per SimpleQA paper):
 
 Usage:
   python scripts/asym_smolagents/eval_simpleqa_official.py \
-      --input experiments/v010_smolagents_agent/demo2_benchmark100_thinkoff/asym_cda.json \
-      --out experiments/v010_smolagents_agent/demo2_benchmark100_thinkoff/asym_cda_official.json
+      --input outputs/simpleqa/asym_cda.json \
+      --out outputs/simpleqa/asym_cda_official.json
 """
 import argparse
 import json
@@ -160,7 +160,7 @@ def main():
     results = d["results"][: args.limit if args.limit else None]
     print(f"[grader] grading {len(results)} answers from {in_path.name} with {args.model}")
 
-    # Load from shared PPTAgent conf.yaml (same as eval_mc_v07_judge.py).
+    # Load the shared API configuration used by the benchmark evaluators.
     # api_key_util.py lives at repo root, not scripts/.
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from api_key_util import get_logged_openai_client, get_base_url

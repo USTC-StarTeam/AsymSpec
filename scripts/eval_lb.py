@@ -1,8 +1,7 @@
 """LongBench eval — F1/EM + (optional) LLM-judge.
 
-Reads:  experiments/longbench_v08_kSweep_2026-05-01/{k_indep,k2,k4,k6}/*_responses.jsonl
-Writes: experiments/longbench_v08_kSweep_2026-05-01/eval_summary.jsonl
-        and per-cell eval JSON next to each responses file.
+Reads response JSONL files below a user-supplied experiment directory and
+writes per-cell evaluation JSON plus an aggregate ``eval_summary.jsonl``.
 
 For each (cell, response) pair:
   - Extract final answer via regex (last "the answer is X" with period-tolerant match)

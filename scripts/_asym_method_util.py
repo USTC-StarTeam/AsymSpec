@@ -1,6 +1,6 @@
 """Shared helper to set ASYMSPEC_METHOD env var for bench scripts using setup_asym_method().
 
-Usage (bench_mc_v07.py and similar):
+Usage (bench_multichallenge.py and similar):
     from _asym_method_util import setup_asym_method
     setup_asym_method(args.asym_method, beta=args.beta)
 """

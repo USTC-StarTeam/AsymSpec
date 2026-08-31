@@ -1,7 +1,7 @@
-"""LongBench bench — vLLM SpecSteer v0.8, K-swept, Multi-doc QA subset.
+"""Cross-family LongBench benchmark for AsymSpec and its baselines.
 
-Adapted from bench_mc_v07.py. Differences from MC:
-  1. Dataset: LongBench v1 Multi-doc QA (HotpotQA + 2WikiMQA + MuSiQue,
+Configuration:
+  1. Dataset: LongBench Multi-doc QA (HotpotQA + 2WikiMQA + MuSiQue,
      200 each = 600 samples). Loaded from data/longbench/raw/*.jsonl
      and tagged with `dataset` field.
   2. Summary: per-_id cache from data/longbench/summaries.jsonl
@@ -26,7 +26,7 @@ import argparse, hashlib, json, os, sys, time
 os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
 
 from pathlib import Path as _P
-sys.path.insert(0, str(_P(__file__).resolve().parents[2]))  # copy lives in rebuttal/code/ -> repo root is parents[2]
+sys.path.insert(0, str(_P(__file__).resolve().parents[2]))
 from paths import LLM_PATH, slm_model, vllm_specsteer_targets, REPO_ROOT, LB_RAW, LB_SUMMARIES
 
 SUMMARY_PATH = str(LB_SUMMARIES)
@@ -55,15 +55,11 @@ ap.add_argument("--mode", required=True,
                      "main context (B4, amateur floor); "
                      "b1_drafter_aug=drafter(SLM) alone on full passages (B1); "
                      "classical_sps_main=classical SD with verifier+drafter both on "
-                     "the COMPRESSED context (Phase 2.1 baseline: fair-cost compressed SD); "
+                     "the COMPRESSED context (fair-cost compressed-SD baseline); "
                      "scd=Speculative Contrastive Decoding baseline, expert(32B)"
                      "/amateur(SLM) on the SAME main context (B3); "
                      "b2_append=non-speculative transfer, 32B on main with the "
                      "drafter's answer appended (B2, needs --draft_answers)")
-ap.add_argument("--dataset", default="lb", choices=["lb", "lbv2"],
-                help="lb=LongBench v1 (F1, eval_lb); lbv2=LongBench v2 "
-                     "frozen subset, 4-choice MC, exact-letter (eval_lbv2). "
-                     "lbv2 requires experiments/cache/lbv2_llmlingua.json.")
 ap.add_argument("--K", type=int, default=2,
                 help="num_speculative_tokens (drafts/step); ignored for b1_*")
 ap.add_argument("--asym_method", default="jsd",
@@ -102,7 +98,7 @@ ap.add_argument("--draft_tp", type=int, default=None,
                 help="draft tensor_parallel_size; must equal --tp for the "
                      "SpecSteer/draft_model path. Defaults to --tp.")
 ap.add_argument("--hetero", action="store_true",
-                help="USD-AsymSpec: drafter and verifier use DIFFERENT "
+                help="Cross-family AsymSpec: drafter and verifier use different "
                      "tokenizers/vocabs. Aug+base prompts are encoded with the "
                      "drafter tokenizer; engine translation via --hetero_map.")
 ap.add_argument("--hetero_map", default=os.environ.get("ASYMSPEC_HETERO_MAP", ""),
@@ -115,7 +111,7 @@ ap.add_argument("--main_context", default="summary",
                      "summary=Qwen3-32B offline cap=1500; "
                      "question_only=closed-book floor; "
                      "truncate=passages hard-cut to --truncate_tokens (ABL-4); "
-                     "llmlingua=LLMLingua-2 cache (lbv2 only).")
+                     "llmlingua=LLMLingua-2 cache.")
 ap.add_argument("--cell", required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--responses", required=True)
@@ -139,11 +135,6 @@ ap.add_argument("--yarn_factor", type=float, default=None,
                      "factor=4.0 → ~131K effective from 32768 base.")
 ap.add_argument("--yarn_original_max", type=int, default=32768,
                 help="YaRN original_max_position_embeddings (Qwen3 default 32768).")
-ap.add_argument("--limit_ids", default="",
-                help="Path to a JSON file with key 'ids' = list of _id strings. "
-                     "If set (lbv2 only), the run is restricted to those _ids "
-                     "(intersected with the frozen subset). Used for result-"
-                     "blind pre-registration and YaRN smoke tests.")
 ap.add_argument("--n", type=int, default=0,
                 help="If >0, limit to first N samples (smoke testing). "
                      "Default 0 = full 600.")
@@ -163,7 +154,7 @@ if args.tasks:
     print(f"[setup] task filter: {TASKS}", flush=True)
 
 SLM_PATH = slm_model(args.slm)
-# --- Cross-family overrides (rebuttal Layer 1: non-Qwen same-series pair) ---
+# Cross-family model overrides.
 if args.drafter_path:
     SLM_PATH = args.drafter_path
 if args.verifier_path:
@@ -173,7 +164,7 @@ if args.draft_tp is None:
 print(f"[setup] verifier={LLM_PATH} drafter={SLM_PATH} "
       f"tp={args.tp} draft_tp={args.draft_tp}", flush=True)
 if args.hetero:
-    # HETERO (USD-AsymSpec): must be in env BEFORE the engine spawns workers.
+    # Cross-vocabulary settings must be present before engine workers start.
     os.environ["ASYMSPEC_HETERO_VOCAB"] = "1"
     os.environ["ASYMSPEC_HETERO_MAP"] = args.hetero_map
     # bonus off => every committed token is an accepted draft (intersection)
@@ -271,8 +262,7 @@ if args.mode in _MAIN_CTX_MODES and args.main_context == "summary":
     print(f"[setup] loaded summaries n={len(SUMMARY_LOOKUP)}", flush=True)
 
 LLMLINGUA_LOOKUP = None
-if (args.dataset == "lb" and args.mode in _MAIN_CTX_MODES
-        and args.main_context == "llmlingua"):
+if args.mode in _MAIN_CTX_MODES and args.main_context == "llmlingua":
     _cpath = f"{REPO_ROOT}/experiments/cache/lb_llmlingua.json"
     if not os.path.exists(_cpath):
         raise SystemExit(f"lb llmlingua needs {_cpath} (run gen_lb_llmlingua.py)")
@@ -397,7 +387,7 @@ def build_prompts(mode):
         elif mode in ("b1_main", "b1_drafter_main", "classical_sps_main"):
             # b1_drafter_main: SLM alone on the COMPRESSED context (B4).
             # classical_sps_main: 32B verifier + SLM drafter, BOTH on the
-            #   compressed context — Phase 2.1 fair-cost compressed-SD
+            #   compressed context — fair-cost compressed-SD
             #   baseline. No aug substitution; drafter reads same prompt.
             ids = _to_chat_ids(main_text)
             aug = None
@@ -442,83 +432,7 @@ def build_prompts(mode):
     return out
 
 
-LBV2_TMPL = """Read the context and answer the multiple-choice question.
-
-{ctx}
-
-Question: {q}
-(A) {a}
-(B) {b}
-(C) {c}
-(D) {d}
-
-Think step by step, then provide your final answer in the format "The answer is X." where X is one of A, B, C, or D."""
-
-
-def _fmt_lbv2(ctx, q, ch):
-    return LBV2_TMPL.format(ctx=ctx, q=q, a=ch[0], b=ch[1], c=ch[2], d=ch[3])
-
-
-def build_prompts_lbv2(mode):
-    """LongBench v2 (frozen subset + LLMLingua-2 x_main). Same tuple shape
-    as build_prompts: (idx,_id,domain,gold_letter,ids,aug). Reuses the
-    sampler/output path unchanged; eval is exact-letter via eval_lbv2.py."""
-    cpath = f"{REPO_ROOT}/experiments/cache/lbv2_llmlingua.json"
-    if not os.path.exists(cpath):
-        raise SystemExit(f"lbv2 needs {cpath} (run gen_lbv2_llmlingua.py)")
-    cache = json.load(open(cpath))
-    frozen, comp = cache["frozen_subset"], cache["compressions"]
-    if mode == "b2_append":
-        raise SystemExit("b2_append not supported for lbv2")
-    _aug_only = mode in ("b1_aug", "classical_sps_aug", "b1_drafter_aug")
-    if not _aug_only and args.main_context != "llmlingua":
-        raise SystemExit("lbv2 supports --main_context llmlingua only")
-    from huggingface_hub import hf_hub_download
-    rows = json.load(open(hf_hub_download(
-        "zai-org/LongBench-v2", "data.json", repo_type="dataset")))
-    by_id = {r["_id"]: r for r in rows}
-    order = [f for f in frozen if f["_id"] in comp and f["_id"] in by_id]
-    if args.limit_ids:
-        keep = set(json.load(open(args.limit_ids))["ids"])
-        order = [f for f in order if f["_id"] in keep]
-        print(f"[setup] --limit_ids: kept {len(order)} of {len(frozen)} frozen "
-              f"rows (file={args.limit_ids})", flush=True)
-    if args.n > 0:
-        order = order[:args.n]
-    out, skipped = [], 0
-    MAX_L = args.max_model_len - args.max_new - 16
-    for i, f in enumerate(order):
-        sid = f["_id"]
-        d = by_id[sid]
-        q = d["question"]
-        ch = (d["choice_A"], d["choice_B"], d["choice_C"], d["choice_D"])
-        gold = [str(d["answer"]).strip().upper()[:1]]   # 'A'|'B'|'C'|'D'
-        dom = f.get("domain")
-        aug_text = _fmt_lbv2(d["context"], q, ch)
-        main_text = _fmt_lbv2(comp[sid], q, ch)
-        if _aug_only:
-            ids = _to_chat_ids(aug_text)
-            aug = None
-        elif mode in ("b1_main", "b1_drafter_main"):
-            ids = _to_chat_ids(main_text)
-            aug = None
-        elif mode == "scd":
-            ids = _to_chat_ids(main_text)
-            aug = list(ids)
-        else:  # specsteer
-            ids = _to_chat_ids(main_text)
-            aug = _to_chat_ids(aug_text)
-        if len(ids) > MAX_L or (aug is not None and len(aug) > MAX_L):
-            skipped += 1
-            continue
-        out.append((i, sid, dom, gold, ids, aug))
-    print(f"[setup] lbv2 mode={mode} kept {len(out)}/{len(order)} "
-          f"skipped={skipped}", flush=True)
-    return out
-
-
-prompts = (build_prompts_lbv2 if args.dataset == "lbv2"
-           else build_prompts)(args.mode)
+prompts = build_prompts(args.mode)
 
 # B1 (drafter-alone) loads the SLM as the only model; everything else uses 32B.
 BASE_MODEL = SLM_PATH if args.mode in ("b1_drafter_aug", "b1_drafter_main") else LLM_PATH
@@ -552,7 +466,7 @@ if args.max_cudagraph_size < 512:
     print(f"[setup] cudagraph_capture_sizes capped to <={args.max_cudagraph_size} "
           f"({len(_capped)} sizes; max={_capped[-1]})", flush=True)
 print(f"[setup] custom_ops=['none', '+rms_norm']; pass_config disabled "
-      f"(root-cause fixes from bench_mc_v07.py)", flush=True)
+      f"for stable graph capture", flush=True)
 kwargs["compilation_config"] = compilation_cfg
 
 if args.mode in ("specsteer", "scd"):
@@ -765,10 +679,8 @@ distributions = {
     "per_prompt_elapsed_s": _dist(elapsed_list),
 }
 
-# Per-dataset metrics breakdown (avg output len, count).
+# Per-dataset metrics breakdown (average output length and count).
 per_dataset = {t: {"n": 0, "out_tokens": 0} for t in TASKS}
-# lbv2 task names (domain strings) are not in the static TASKS dict; use
-# setdefault so per-domain accumulation works for both LB v1 and v2.
 for idx in outputs:
     t = task_by_idx[idx]
     per_dataset.setdefault(t, {"n": 0, "out_tokens": 0})

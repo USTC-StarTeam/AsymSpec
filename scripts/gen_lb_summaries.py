@@ -117,7 +117,7 @@ def main():
         print(f"[setup] {skipped} samples skipped (input too long)", flush=True)
 
     # vLLM with same compilation config as benchmark (avoids fuse_norm_quant
-    # crash; see scripts/bench_mc_v07.py rationale).
+    # crash; see scripts/bench_multichallenge.py rationale).
     compilation_cfg = {
         "custom_ops": ["none", "+rms_norm"],
         "pass_config": {

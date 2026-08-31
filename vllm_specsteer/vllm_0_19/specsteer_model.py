@@ -1,25 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-# SpecSteer proposer — draft-model SpS with a 2nd small model (base) for
-# contrast fusion. Research fork.
+# AsymSpec proposer for vLLM 0.19.0. The legacy ``SpecSteer`` class and field
+# names are retained to minimize changes to vLLM's integration surface.
 #
-# === v0.10.mm: SMOKE TEST FORK FOR MULTIMODAL DRAFTER ===
-# Differences from v0.10:
-#   1. Module-level _aug_mm_data dict caches per-request pixel_values + grid_thw
-#      from sampling_params.extra_args["specsteer_aug_pixel_values"|"...image_grid_thw"]
-#   2. New helper _compute_aug_inputs_embeds(req_id, aug_input_ids) → optionally
-#      returns inputs_embeds with image embeddings merged in
-#   3. The 3 _orig_drafter_forward call sites use the helper when image present
-#   4. set_inputs_first_pass override writes 3D M-RoPE positions for VL drafter
-#      (text-only path unchanged)
-# This is NOT production. Smoke test only. Many simplifications:
-#   - Single image per request (no video, no multi-image)
-#   - enforce_eager=True only (no cudagraph)
-#   - No tensor parallelism
-# =========================================================
-#
-# Inheritance: extends DraftModelProposer with an ADDITIONAL "base" model
-# whose logits participate only in the sampler's rejection decision and the
-# fused argmax at the reject position.
+# The proposer extends DraftModelProposer with a second view of the same small
+# model. The full-context view proposes tokens and produces ``aug_logits``;
+# the compressed-context view maintains a separate KV cache and produces
+# ``base_logits``. The verifier remains on the compressed context. Text and
+# single-image multimodal requests are supported.
 #
 # ╭──────────────────────── per-step data flow ────────────────────────╮
 # │   aug context (full)  ──▶ SLM_aug  ─┐                               │
@@ -32,39 +19,6 @@
 # │         (γ-rule accept, fused argmax on reject)                     │
 # ╰─────────────────────────────────────────────────────────────────────╯
 #
-# Integration checklist:
-#
-# [x] A. SpeculativeConfig.method == "specsteer" + sub-fields
-#         {specsteer_beta: float = 1.0, specsteer_gamma: float = 0.5}
-#      in vllm/config/speculative.py. vllm/config/vllm.py async-scheduling
-#      allowlist updated. verify_equal_vocab_size_if_draft_model() and
-#      uses_draft_model() both include specsteer.
-#
-# [PARTIAL] B. _get_model() — Phase 1 uses a SINGLE drafter; base_logits
-#      re-use drafter logits (main==aug invariant). A second SLM forward
-#      is not needed yet. Real SpecSteer (main≠aug) requires loading a
-#      separate base model with its own KV cache — deferred.
-#
-# [x] C (Phase 1 shape). _greedy_sample override retains per-position
-#      draft logits, exposed via self._draft_logits_per_pos.
-#
-# [SKIP] D. SpecDecodeMetadata.base_logits not needed in Phase 1 because
-#      runner._specsteer_sample reads drafter logits directly from
-#      proposer._draft_logits_per_pos.
-#
-# [x] E. Sampler dispatch — gpu_model_runner._specsteer_sample runs
-#      specsteer_greedy_sample when isinstance(drafter, SpecSteerProposer)
-#      AND sampling_metadata.all_greedy. Non-greedy and variable-K
-#      cases fall back to the standard rejection sampler.
-#
-# [DEFERRED] F. Dual-prompt (main≠aug) request metadata.
-#
-# Remaining work for FULL specsteer (main≠aug, real contrast): wire a
-# second KV-cache'd SLM_base forward that runs on the TARGET's prompt
-# whenever the drafter is fed a DIFFERENT aug prompt. This is gate by a
-# per-request `alt_draft_prompt_ids` field that doesn't exist yet in the
-# Request dataclass.
-
 from __future__ import annotations
 
 import os
@@ -86,7 +40,7 @@ def _specsteer_cache_hygiene():
     profile + warmup). If init crashes mid-way (OOM, illegal memory, SIGKILL,
     timeout), cache keeps half-written .so/meta files that later reload and
     dispatch to invalid memory — the same crash repeats and looks like a
-    model/hardware bug. See V07_FROZEN.md.
+    model/hardware bug.
 
     Mechanism: sentinel file at ~/.cache/vllm/.specsteer_clean_exit.
       - Removed at startup; rewritten by atexit on clean exit.
@@ -136,15 +90,14 @@ _specsteer_cache_hygiene()
 
 
 def _install_drafter_gid_split_patch():
-    """Phase 1: monkey-patch get_kv_cache_groups to split drafter into its
-    own gid. Called once on first SpecSteerProposer instance.
+    """Split the full-context drafter into its own KV-cache group.
 
     Default behavior (uniform-spec case): all 120 layers (LLM + drafter +
     base) in 1 group, single block_table per request.
 
     After patch: 2 groups —
       - gid 0: LLM + base layers (share main ctx)
-      - gid 1: drafter layers (will eventually track aug ctx in Phase 2)
+      - gid 1: drafter layers (track the full context)
 
     Note: patch is idempotent — re-applying is a no-op.
     """
@@ -171,7 +124,7 @@ def _install_drafter_gid_split_patch():
                     kv_cache_spec, [other_layers, drafter_layers],
                 )
                 logger.info(
-                    "SpecSteer Phase 1: split drafter (%d layers) into "
+                    "AsymSpec: split drafter (%d layers) into "
                     "gid=1; other (%d layers) stays in gid=0",
                     len(drafter_layers), len(other_layers),
                 )
@@ -218,7 +171,7 @@ def _install_drafter_gid_split_patch():
         )
     _kvc.get_kv_cache_coordinator = _patched_coord
 
-    # === Phase 2: per-gid num_tokens override ===
+    # Per-group token-count override.
     # vLLM assumes one num_tokens per request across all gids. SpecSteer needs
     # gid=1 (drafter) to have L_aug + max_new while gid=0 (LLM+base) has
     # L_main + max_new. We maintain a request_id -> aug_len_offset registry
@@ -256,7 +209,7 @@ def _install_drafter_gid_split_patch():
         _aug_prefilled: dict[str, tuple[int, int]] = {}
         _kvu._specsteer_aug_offsets = _aug_offsets
         _kvu._specsteer_aug_prefilled = _aug_prefilled
-        # v0.10.mm: per-request multimodal data cache.
+        # Per-request multimodal data cache.
         # Populated in _patched_alloc_slots when extra_args has pixel_values.
         # Value: dict with keys "pixel_values" (Tensor), "image_grid_thw" (Tensor)
         # Cleared in _patched_free along with _aug_offsets.
@@ -281,7 +234,7 @@ def _install_drafter_gid_split_patch():
             sp = getattr(request, "sampling_params", None)
             if sp is not None and sp.extra_args is not None:
                 aug_ids = sp.extra_args.get("specsteer_aug_prompt_ids")
-                # v0.10.mm: capture multimodal data once per request.
+                # Capture multimodal data once per request.
                 _pv = sp.extra_args.get("specsteer_aug_pixel_values")
                 _gt = sp.extra_args.get("specsteer_aug_image_grid_thw")
                 if _pv is not None and _gt is not None:
@@ -316,7 +269,7 @@ def _install_drafter_gid_split_patch():
                         )
                     elif not getattr(request, "_specsteer_logged", False):
                         logger.info(
-                            "SpecSteer Phase 2: req %s aug_offset=%d "
+                            "AsymSpec: req %s aug_offset=%d "
                             "(L_aug=%d - L_main=%d)",
                             request.request_id, L_aug - L_main, L_aug, L_main,
                         )
@@ -397,7 +350,7 @@ def _install_drafter_gid_split_patch():
         def _patched_free(self, request_id):
             _aug_offsets.pop(request_id, None)
             _aug_prefilled.pop(request_id, None)
-            _aug_mm_data.pop(request_id, None)  # v0.10.mm
+            _aug_mm_data.pop(request_id, None)
             return _orig_free(self, request_id)
 
         _kvcc.KVCacheCoordinator.allocate_new_blocks = _patched_allocate_new_blocks
@@ -420,7 +373,7 @@ class SpecSteerProposer(DraftModelProposer):
     block_table; BS≥1 capable). Slow fallback `_base_parallel_verify`
     (line ~655) handles prefill, shape changes, and over-sized batches.
 
-    v0.8 BS≥1 status (single code path, no `if num_reqs == 1` branches):
+    Batched execution uses one code path for BS≥1:
     - `_compute_aug_first_bonus`: batched ragged drafter forward over N reqs
       via concat input_ids + per-req block_table rows + per-req query_start_loc.
     - Gate A bonus correction call site: collect-then-batched (single drafter
@@ -429,15 +382,12 @@ class SpecSteerProposer(DraftModelProposer):
       (line ~1860): rewritten to handle per-req aug_ids / per-req offsets via
       ragged tensor construction. PREFILL gates on "homogeneous batch" (all
       N reqs have aug with positive offset); heterogeneous mixed-mode batches
-      still skip the swap (same as v0.7's no-swap fallback path).
+      still skip the swap and use the symmetric fallback path.
     - Aug_offset detection (line ~1685): loops all N reqs, builds per_req_aug
       list with (req_idx, aug_ids, aug_offset, L_main, L_aug) per req.
 
-    BS=1 token output identity vs v0.7: at num_reqs==1 with single aug req,
-    every per-req loop / concat / index_select degenerates to v0.7-equivalent
-    arithmetic on length-1 inputs. Same input data flows through same kernel
-    sequence → same output token IDs (verified empirically; bf16 floating
-    point bit-identity not guaranteed but token argmax is).
+    At BS=1, the batched tensor operations reduce to the corresponding
+    single-request operations.
 
     Opt-in via speculative_config.method == "specsteer".
     """
@@ -448,18 +398,18 @@ class SpecSteerProposer(DraftModelProposer):
         _install_drafter_gid_split_patch()
         super().__init__(vllm_config=vllm_config, device=device, runner=runner)
         self.runner = runner  # parent doesn't store it
-        # v0.10.mm Patch 3a: parent only allocates self.positions for non-mrope
+        # The parent only allocates self.positions for non-M-RoPE
         # drafters (eagle.py:148-160). For M-RoPE drafter (Qwen3-VL), the
         # inherited Triton kernel `copy_and_expand_eagle_inputs_kernel` at
         # eagle.py:729 still hardcodes `out_positions_ptr=self.positions`.
         # Allocate a dummy 1D buffer so the kernel doesn't AttributeError.
-        # Patch 3b (set_inputs_first_pass override) mirrors the kernel output
+        # The set_inputs_first_pass override mirrors the kernel output
         # to mrope_positions for actual forward consumption.
         if getattr(self, "uses_mrope", False) and not hasattr(self, 'positions'):
             self.positions = torch.zeros(
                 self.max_num_tokens, dtype=torch.int64, device=device,
             )
-            logger.info("v0.10.mm: allocated dummy self.positions (M-RoPE drafter)")
+            logger.info("AsymSpec: allocated dummy self.positions (M-RoPE drafter)")
         self.beta: float = getattr(
             self.speculative_config, "specsteer_beta", 1.0,
         )
@@ -496,7 +446,7 @@ class SpecSteerProposer(DraftModelProposer):
         # match drafter's aug_logits[0] — isolates attn setup bugs.
         self._pv_committed_only: bool = False  # diag off — full prefill path
 
-        # Phase 2 state: populated by _base_mirror_forward each step.
+        # Base-model state populated by _base_mirror_forward each step.
         # _last_mirror_tail_hidden: [1, hidden] — last hidden state of
         # base's mirror forward. Its logit (via compute_logits) predicts
         # the next token = drafts[0] under base main ctx.
@@ -660,7 +610,7 @@ class SpecSteerProposer(DraftModelProposer):
 
         Single-chunk requests (the legacy non-streaming flow) get the same
         behavior because aug_len doesn't grow → no invalidation. Byte-
-        identical to v0.10 baseline at BS=1.
+        identical to the non-streaming BS=1 path.
         """
         if not req_ids:
             return
@@ -752,7 +702,7 @@ class SpecSteerProposer(DraftModelProposer):
 
     @override
     def validate_same_kv_cache_group(self, kv_cache_config) -> None:
-        """SpecSteer Phase 1: drafter and base may be in DIFFERENT gids.
+        """The drafter and base model may be in different cache groups.
         Validate each of them is internally in a single gid (not both).
         """
         layer_to_gid = {}
@@ -776,7 +726,7 @@ class SpecSteerProposer(DraftModelProposer):
         kv_cache_config,
         kernel_block_sizes: list[int] | None = None,
     ) -> None:
-        """Phase 1: drafter gets its own gid=1, base stays in gid=0 (with LLM).
+        """Keep the drafter in gid=1 and the base model in gid=0 with the LLM.
         Build `draft_attn_groups` (drafter-only) and `base_attn_groups`
         (base-only) with their respective kv_cache_group_ids.
         """
@@ -848,14 +798,13 @@ class SpecSteerProposer(DraftModelProposer):
 
 
         logger.info(
-            "SpecSteer Phase 1: drafter_gid=%d (%d layers) + base_gid=%d "
+            "AsymSpec: drafter_gid=%d (%d layers) + base_gid=%d "
             "(%d layers). Separate block tables will be used.",
             drafter_gid, len(drafter_set), base_gid, len(base_set),
         )
 
-        # v0.7: dual_forward removed. Path A caused warmup crashes (slot_mapping
-        # mismatch) without ever being used in production. Keep _orig_drafter_forward
-        # for _compute_aug_first_bonus.
+        # The obsolete dual-forward path is disabled. Keep the original
+        # drafter forward for _compute_aug_first_bonus.
         self._orig_drafter_forward = self.model.forward
 
     @torch.no_grad()
@@ -866,7 +815,7 @@ class SpecSteerProposer(DraftModelProposer):
     ) -> torch.Tensor | None:
         """Run SLM_base in ONE parallel forward on [last_committed_main, drafts].
 
-        Mirrors HF v3 bench_specsteer_bypass's base computation: K+1 tokens
+        Uses K+1 tokens
         parallel at positions [L-1..L+K-1], returns K+1 logits where the
         first K predict drafts[0..K-1] (consumed by sampler) and the K+1-th
         is a bonus prediction.
@@ -1319,8 +1268,8 @@ class SpecSteerProposer(DraftModelProposer):
 
         Purpose: fix the vLLM async-spec-decode architectural gap where
         `next_token_ids[i]` is LLM's main-ctx bonus, which ANCHORS drafter
-        to main-ctx predictions even under Gate A. HF SpecSteer v3 drafts
-        from PURE aug ctx. To match, we replace next_token_ids[i] with
+        to main-context predictions even under the context swap. We replace
+        next_token_ids[i] with
         aug SLM's own prediction at position L_i.
 
         Runs a SINGLE batched drafter forward over the concatenation of all
@@ -1335,21 +1284,21 @@ class SpecSteerProposer(DraftModelProposer):
             req_index is ignored.
             Returns: [bonus_0, bonus_1, ...] (None entries on failure)
 
-        (B) Single (legacy, BS=1 only):
+        (B) Single-request compatibility form:
             items = aug_ids_list, req_index = int  (or items=(req_idx, aug_ids))
             Returns: bonus_int (or None on failure)
 
         BS=1 byte-identity: at N=1 the batched code path produces identical
-        tensor shapes to the legacy single-req code (same input_ids shape (L,),
+        tensor shapes to the single-request code (same input_ids shape (L,),
         same positions arange(L), same block_table[req_idx:req_idx+1] slice,
         same query_start_loc=[0,L], same per_layer_attn_metadata builder call,
         same drafter forward args). PyTorch selects the same kernels for the
-        same shapes → bf16 output bit-identical to v0.7.
+        same shapes and numerical behavior.
         """
         from vllm.forward_context import set_forward_context
         from vllm.v1.attention.backend import CommonAttentionMetadata
 
-        # Normalize legacy single-req calling convention to the batched form.
+        # Normalize the single-request calling convention to the batched form.
         single_call = False
         if req_index is not None:
             # Legacy form: items is the aug_ids list, req_index is int
@@ -1387,7 +1336,7 @@ class SpecSteerProposer(DraftModelProposer):
 
         # ---- Build batched ragged tensors (single code path, N≥1) ----
         # At N=1, all the lists/cats/index_selects below have length 1 and
-        # produce shape-equivalent tensors to v0.7's single-shot allocations.
+        # produce shape-equivalent tensors to single-request allocations.
         # PyTorch may pick different memory layouts (contiguous copy vs view)
         # but downstream kernels read element values → token output identical.
         all_input_ids = torch.cat([
@@ -1418,7 +1367,7 @@ class SpecSteerProposer(DraftModelProposer):
             slot_pieces.append(slot)
         slot_mapping = torch.cat(slot_pieces, dim=0)
 
-        # CAD fields. At N=1, query_start_loc=[0, L] matches v0.7 exactly.
+        # CAD fields. At N=1, query_start_loc=[0, L].
         query_start_loc_cpu = torch.tensor(offsets, dtype=torch.int32)
         query_start_loc = query_start_loc_cpu.to(self.device)
         seq_lens = torch.tensor(Ls, dtype=torch.int32, device=self.device)
@@ -1451,9 +1400,9 @@ class SpecSteerProposer(DraftModelProposer):
                           if "draft_model." in n]
         slot_mapping_dict = {n: slot_mapping for n in drafter_layers}
 
-        # v0.10.mm: optionally compute multimodal inputs_embeds
+        # Optionally compute multimodal input embeddings.
         _vlmm_embeds = self._vlmm_compute_aug_inputs_embeds(valid, all_input_ids)
-        # v0.10.mm: M-RoPE drafter requires (3, N) positions. For multimodal
+        # An M-RoPE drafter requires (3, N) positions. For multimodal
         # aug prompts (image+text), use proper image-aware mrope positions
         # (image patch tokens get spatial h/w coords on axes 1,2). Falls back
         # to broadcast for text-only.
@@ -1479,7 +1428,7 @@ class SpecSteerProposer(DraftModelProposer):
             dh = ret[0] if isinstance(ret, tuple) else ret
         # dh shape: (sum_L, H). Gather last position per request via index_select.
         # At N=1 this returns a (1, H) view of dh's last row — same data as
-        # v0.7's `dh[-1:]`, downstream compute_logits gives same logits.
+        # selecting `dh[-1:]`; downstream compute_logits receives the same row.
         last_indices = torch.tensor(
             [offsets[i + 1] - 1 for i in range(len(valid))],
             dtype=torch.int64, device=self.device,
@@ -1498,7 +1447,7 @@ class SpecSteerProposer(DraftModelProposer):
         return results
 
     @torch.no_grad()
-    def _v09_prof_event(self, label: str = ""):
+    def _profile_event(self, label: str = ""):
         """Create + record a CUDA event for fine-grained profiling.
         Returns the event. Caller stores in a list to compute deltas later.
         """
@@ -1510,23 +1459,21 @@ class SpecSteerProposer(DraftModelProposer):
     def _merged_aug_prefill_and_kdecode(
         self, items: list[tuple[int, list[int]]], K: int,
     ) -> "torch.Tensor | None":
-        """v0.9 forward-merge: do drafter aug-prefill + K incremental decodes
-        in a single fused path.
+        """Run full-context drafter prefill plus K incremental decodes.
 
-        Replaces v0.8's [F1 prefill_L (compute bonus) + F2 prefill_(L+1) +
-        (K-1) decodes] with [merged prefill_L + K decodes]. Saves one drafter
-        prefill of L per spec step.
+        This merges the bonus and draft-prefill work, saving one full-context
+        drafter prefill per speculation step.
 
-        Phase 1 (prefill L): same as _compute_aug_first_bonus body — drafter
+        Prefill stage: same as _compute_aug_first_bonus — the drafter
         forwards aug[0..L-1], computes bonus = argmax(hidden[L-1]).
         Drafter KV is populated for positions [0..L-1].
 
-        Phase 2 (K decodes): for i in 0..K-1, forward [last_token] at position
+        Decode stage: for i in 0..K-1, forward [last_token] at position
         L+i using the cached KV. Each decode samples one draft token.
         last_token starts as bonus, then becomes previous draft.
 
         Returns: draft_token_ids of shape (N, K) where N = len(valid items).
-        Returns None on failure (caller falls back to v0.8 path).
+        Returns None on failure.
 
         BS≥1: per-req L_i and per-req block tables. Each iter forwards N
         tokens (one per req), each at its own position.
@@ -1552,7 +1499,7 @@ class SpecSteerProposer(DraftModelProposer):
         _PROF = self._profile_enabled
         prof_evts: list[tuple[str, "torch.cuda.Event"]] = []
         if _PROF:
-            prof_evts.append(("start", self._v09_prof_event()))
+            prof_evts.append(("start", self._profile_event()))
 
         # Per-request lengths and offsets
         Ls = [len(a) for _, _, a in valid]
@@ -1562,7 +1509,7 @@ class SpecSteerProposer(DraftModelProposer):
         for L in Ls:
             offsets.append(offsets[-1] + L)
 
-        # ---- PHASE 1: incremental prefill aug, get bonus ----
+        # Incrementally prefill the full context and obtain the bonus.
         # Per-req start position from _aug_prefilled cache. First call for a
         # given req_id does full prefill [0..L-1]; subsequent calls (within
         # the same streaming session) only forward [L_prev..L-1] using cached
@@ -1694,8 +1641,8 @@ class SpecSteerProposer(DraftModelProposer):
                           if "draft_model." in n]
         slot_mapping_dict = {n: slot_mapping_prefill for n in drafter_layers}
 
-        if _PROF: prof_evts.append(("ph1_setup_done", self._v09_prof_event()))
-        # v0.10.mm Patch 2c: vision tower for prefill_phase (forward site 2)
+        if _PROF: prof_evts.append(("prefill_setup_done", self._profile_event()))
+        # Compute multimodal embeddings for the prefill stage when present.
         _vlmm_embeds = self._vlmm_compute_aug_inputs_embeds(valid, all_input_ids)
         if getattr(self, "uses_mrope", False):
             mrope_pos = self._vlmm_get_aug_mrope_positions(valid, all_input_ids)
@@ -1717,7 +1664,7 @@ class SpecSteerProposer(DraftModelProposer):
                     input_ids=all_input_ids, positions=all_positions, inputs_embeds=None,
                 )
             dh = ret[0] if isinstance(ret, tuple) else ret
-        if _PROF: prof_evts.append(("ph1_forward_done", self._v09_prof_event()))
+        if _PROF: prof_evts.append(("prefill_forward_done", self._profile_event()))
 
         # bonus per req: argmax at LAST position of each req's incremental slice
         # = position L_i - 1 in absolute terms = offsets_inc[i+1] - 1 in dh
@@ -1738,21 +1685,21 @@ class SpecSteerProposer(DraftModelProposer):
                 self._aug_prefilled[rid] = (
                     len(aug_ids), hash(tuple(aug_ids)),
                 )
-        if _PROF: prof_evts.append(("ph1_bonus_done", self._v09_prof_event()))
-        # DEBUG: log bonus for byte-equiv comparison vs v0.8
+        if _PROF: prof_evts.append(("prefill_bonus_done", self._profile_event()))
+        # Trace the full-context drafter's bonus prediction.
         for j, (_, ri, aug_ids) in enumerate(valid):
             logger.info(
-                "SpecSteer v0.9 BONUS: req[%d] L_aug=%d bonus=%d",
+                "AsymSpec BONUS: req[%d] L_aug=%d bonus=%d",
                 ri, len(aug_ids), int(bonus_per_req[j].item()),
             )
 
-        # ---- PHASE 2: K incremental decodes ----
+        # Run K incremental drafter decodes.
         # Each iter: input = (N_valid,) tokens, one per req, at position L_i + iter
         draft_token_ids_list = []  # list of (N_valid,) tensors per iter
         last_tokens = bonus_per_req  # input for first decode
 
         for iter_idx in range(K):
-            if _PROF: prof_evts.append((f"k{iter_idx}_start", self._v09_prof_event()))
+            if _PROF: prof_evts.append((f"k{iter_idx}_start", self._profile_event()))
             # Per-req current position (L_i + iter_idx) and slot
             cur_positions = torch.tensor(
                 [Ls[i] + iter_idx for i in range(len(valid))],
@@ -1808,9 +1755,9 @@ class SpecSteerProposer(DraftModelProposer):
                 n: slot_mapping_dec for n in drafter_layers
             }
 
-            if _PROF: prof_evts.append((f"k{iter_idx}_meta_done", self._v09_prof_event()))
+            if _PROF: prof_evts.append((f"k{iter_idx}_meta_done", self._profile_event()))
             input_ids_dec = last_tokens.to(torch.int32)
-            # v0.10.mm Patch 2d: drafter-correct M-RoPE positions for K decode.
+            # Use drafter-correct M-RoPE positions for K-token decoding.
             # cur_positions = [Ls[i] + iter_idx for i in range(N)] uses
             # drafter's own context length Ls[i] = len(aug_ids[i]). For mm reqs
             # we must shift by mrope_position_delta to get drafter's mrope axes.
@@ -1849,7 +1796,7 @@ class SpecSteerProposer(DraftModelProposer):
                     inputs_embeds=None,
                 )
                 dh_dec = ret_dec[0] if isinstance(ret_dec, tuple) else ret_dec
-            if _PROF: prof_evts.append((f"k{iter_idx}_fwd_done", self._v09_prof_event()))
+            if _PROF: prof_evts.append((f"k{iter_idx}_fwd_done", self._profile_event()))
 
             # Sample one new draft per req
             draft_logits = self.model.compute_logits(dh_dec)
@@ -1861,7 +1808,7 @@ class SpecSteerProposer(DraftModelProposer):
             draft_token_ids_list.append(new_drafts)
             last_tokens = new_drafts
 
-        if _PROF: prof_evts.append(("kdec_done", self._v09_prof_event()))
+        if _PROF: prof_evts.append(("kdec_done", self._profile_event()))
 
         # Stack: (K, N_valid) → transpose to (N_valid, K)
         draft_per_req_K = torch.stack(draft_token_ids_list, dim=0).t()
@@ -1873,7 +1820,7 @@ class SpecSteerProposer(DraftModelProposer):
             draft_full[slot] = draft_per_req_K[j].to(torch.int32)
 
         if _PROF:
-            prof_evts.append(("end", self._v09_prof_event()))
+            prof_evts.append(("end", self._profile_event()))
             torch.cuda.synchronize()
             # Compute deltas in ms
             delta_str = []
@@ -1885,7 +1832,7 @@ class SpecSteerProposer(DraftModelProposer):
                 delta_str.append(f"{label}={d_prev:.1f}(+{d_total:.1f})")
                 prev_ev = ev
             logger.info(
-                "v09 PROF L=%d K=%d N=%d: %s",
+                "ASYMSPEC PROF L=%d K=%d N=%d: %s",
                 max_L, K, len(valid), " ".join(delta_str),
             )
 
@@ -1930,7 +1877,7 @@ class SpecSteerProposer(DraftModelProposer):
         image_grid_thw: torch.Tensor,
         config,
     ) -> torch.Tensor:
-        """v0.10.mm: compute Qwen-VL M-RoPE 3D positions for an aug prompt
+        """Compute Qwen-VL M-RoPE 3D positions for a full-context prompt
         with one image. Mirrors `_get_mrope_input_positions` static method
         from `qwen3_vl.py:2228` for the single-image case (no video, no
         multi-image, no EVS pruning).
@@ -2003,15 +1950,15 @@ class SpecSteerProposer(DraftModelProposer):
 
         positions = np.concatenate(pos_pieces, axis=1)  # (3, n)
         assert positions.shape == (3, n), \
-            f"v0.10.mm mrope_pos shape mismatch: got {positions.shape}, want (3, {n})"
+            f"M-RoPE position shape mismatch: got {positions.shape}, want (3, {n})"
         return torch.from_numpy(positions)
 
     @torch.no_grad()
     def _vlmm_get_aug_mrope_positions(
         self, valid: list, all_input_ids: torch.Tensor,
     ) -> torch.Tensor | None:
-        """v0.10.mm: get proper M-RoPE 3D positions for the concatenated aug
-        sequence. Also caches per-request mrope_max (used by Patch 3b for
+        """Get M-RoPE 3D positions for the concatenated full-context
+        sequence. Also cache per-request mrope_max for
         K draft tokens).
 
         Returns: (3, sum_L) tensor on device, or None if no req has mm data.
@@ -2061,7 +2008,7 @@ class SpecSteerProposer(DraftModelProposer):
                     self.model.config,
                 )
                 all_pos[:, offsets[i]:offsets[i+1]] = pos_3d_cpu.to(self.device)
-                # CRITICAL for Patch 3b: cache drafter's max position so K draft
+                # Cache the drafter's maximum position so K draft
                 # tokens get correct continuation positions (NOT verifier's positions)
                 if per_req_id[i] is not None:
                     mm["mrope_max"] = int(pos_3d_cpu.max().item())
@@ -2071,7 +2018,7 @@ class SpecSteerProposer(DraftModelProposer):
     def _vlmm_compute_aug_inputs_embeds(
         self, valid: list, all_input_ids: torch.Tensor,
     ) -> torch.Tensor | None:
-        """v0.10.mm: build inputs_embeds with image embeddings merged in.
+        """Build input embeddings with image embeddings merged in.
 
         For each valid request that has cached pixel_values:
           1. Run drafter's vision tower → image_embeds
@@ -2104,7 +2051,7 @@ class SpecSteerProposer(DraftModelProposer):
         # Get text embeddings for everyone first
         # Drafter model is self.model (Qwen3-VL); has embed_input_ids
         if not hasattr(self.model, "embed_input_ids"):
-            logger.warning("v0.10.mm: drafter has no embed_input_ids — fallback text-only")
+            logger.warning("AsymSpec: drafter has no embed_input_ids; using text only")
             return None
         # Compute multimodal embeddings (image features through vision tower)
         # Build a list of (slot_in_concat, mm_dict) for the concat'd buffer
@@ -2120,7 +2067,7 @@ class SpecSteerProposer(DraftModelProposer):
         for i, mm in enumerate(per_req_mm):
             if mm is None:
                 continue
-            # v0.10.mm hot-fix: cache image_embeds per request to avoid
+            # Cache image embeddings per request to avoid
             # re-running vision tower on every spec step (~50% SS slowdown).
             cached = mm.get("_image_embeds")
             if cached is not None:
@@ -2133,11 +2080,11 @@ class SpecSteerProposer(DraftModelProposer):
                     visual = getattr(self.model, "visual", None) or \
                              getattr(self.model, "vision_tower", None)
                     if visual is None:
-                        logger.warning("v0.10.mm: no vision tower found")
+                        logger.warning("AsymSpec: no vision tower found")
                         return None
                     img_emb = visual(pv, grid_thw=grid)
                 except Exception as e:
-                    logger.warning(f"v0.10.mm: vision tower failed: {e}")
+                    logger.warning(f"AsymSpec: vision tower failed: {e}")
                     return None
                 mm["_image_embeds"] = img_emb  # cache for subsequent steps
             mm_embeds_list.append(img_emb)
@@ -2154,12 +2101,12 @@ class SpecSteerProposer(DraftModelProposer):
                 is_multimodal=is_mm,
             )
         except Exception as e:
-            logger.warning(f"v0.10.mm: embed_input_ids failed: {e}")
+            logger.warning(f"AsymSpec: embed_input_ids failed: {e}")
             return None
         return inputs_embeds
 
     def set_inputs_first_pass(self, *args, **kwargs):
-        """v0.10.mm Patch 3b: write CORRECT M-RoPE positions for K draft tokens.
+        """Write drafter-correct M-RoPE positions for K draft tokens.
 
         The inherited Triton kernel writes positions = `verifier_pos + j` to
         `self.positions` (1D). For asymmetric SS (drafter sees aug=image+text,
@@ -2192,7 +2139,7 @@ class SpecSteerProposer(DraftModelProposer):
             return result
         # For each output slot, lookup which request it belongs to and apply
         # drafter-correct positions. We don't have per-slot req_id directly
-        # here (kernel writes by output_start), but for BS=1 (smoke), all
+        # here (kernel writes by output_start), but for BS=1 all
         # slots map to req 0.
         input_batch = self.runner.input_batch
         # BS=1 smoke shortcut: lookup the single request's mrope_max
@@ -2299,7 +2246,7 @@ class SpecSteerProposer(DraftModelProposer):
 
     @override
     def _greedy_sample(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """v0.7: Retain drafter logits for fusion. Path B overrides base later."""
+        """Retain drafter logits for fusion; Path B supplies base logits."""
         logits = self.model.compute_logits(hidden_states)
         self._draft_logits_per_pos.append(logits.detach())
         self._base_logits_per_pos.append(logits.detach())  # placeholder
@@ -2478,7 +2425,7 @@ class SpecSteerProposer(DraftModelProposer):
             if not getattr(self, "_warned_no_aug", False):
                 logger.info(
                     "SpecSteer: no req has specsteer_aug_prompt_ids — "
-                    "skipping substitution (Phase 1 behavior)",
+                    "skipping full-context substitution",
                 )
                 self._warned_no_aug = True
             return target_token_ids
@@ -2523,17 +2470,17 @@ class SpecSteerProposer(DraftModelProposer):
         else:
             self._stashed_token_indices_to_sample = None
 
-        # Phase 1 + Phase 2 Option Z: drafter in gid=1 with aug-space when
+        # Asymmetric-context setup: drafter in gid=1 with aug-space when
         # aug_ids longer than main. Swap:
-        # (a) block_table_tensor + slot_mapping → gid=1 (Phase 1)
-        # (b) target_token_ids/positions/hidden_states → aug-length (Phase 2)
+        # (a) block_table_tensor + slot_mapping → drafter cache group;
+        # (b) target_token_ids/positions/hidden_states → full-context length,
         #     ONLY on first propose call (prefill step). For decode steps,
         #     positions shift by offset but other buffers keep main shape.
-        # PROFILE: start segment A (Phase 2 Z cam + bonus fix)
-        self._prof_swap_pair = self._prof_start("A_phase2z_swap")
+        # Profile context swap and bonus correction.
+        self._prof_swap_pair = self._prof_start("A_context_swap")
         # Per-req aug data: (req_idx, aug_ids, aug_offset, L_main, L_aug).
         # aug_offset = L_aug - L_main; positive → aug ctx longer than main.
-        # Empty → no req has aug (Phase 1 path: pure draft_model SpS).
+        # Empty means the symmetric draft-model path is used.
         per_req_aug: list[tuple[int, list[int], int, int, int]] = []
         if (self.drafter_kv_cache_gid is not None
                 and self.drafter_kv_cache_gid >= 0
@@ -2554,7 +2501,7 @@ class SpecSteerProposer(DraftModelProposer):
                     L_main_i = req.num_prompt_tokens
                     L_aug_i = len(aug_i)
                     off_i = L_aug_i - L_main_i
-                    # Patch 5: include off!=0 (allow aug<main multimodal case)
+                    # Allow either sign for multimodal full/main length offsets.
                     if off_i != 0:
                         per_req_aug.append((ri, aug_i, off_i, L_main_i, L_aug_i))
 
@@ -2580,9 +2527,9 @@ class SpecSteerProposer(DraftModelProposer):
                 # PREFILL aug-swap fires when batch is homogeneous (all N reqs
                 # have aug_ids with positive offset). N=1 with single aug req
                 # is the trivial case.
-                # v0.10.mm Patch 5: relax off>0 to off!=0 so multimodal SS
+                # Accept off!=0 so multimodal AsymSpec
                 # (where aug=image+short_query may be SHORTER than main=caption)
-                # also triggers Phase 2 swap. Without this, drafter falls back
+                # also triggers the context swap. Without this, the drafter falls back
                 # to running on MAIN text and never sees the image.
                 _homogeneous_aug_batch = (
                     len(per_req_aug) == num_reqs and num_reqs > 0
@@ -2613,7 +2560,7 @@ class SpecSteerProposer(DraftModelProposer):
                     ], dim=0)
 
                     # Hidden states pad/truncate to sum_L. At N=1 sum_L==L_aug,
-                    # logic mirrors v0.7 (pad if shorter, truncate if longer).
+                    # pad if shorter and truncate if longer.
                     hs_shape = target_hidden_states.shape
                     if hs_shape[0] < sum_L:
                         pad = torch.zeros(
@@ -2626,7 +2573,7 @@ class SpecSteerProposer(DraftModelProposer):
                         new_hidden_states = target_hidden_states[:sum_L]
 
                     # CAD construction: per-req lists. At N=1 these lists are
-                    # length 1 → tensor([x]) is shape (1,) same as v0.7.
+                    # length 1 produces a shape-(1,) tensor.
                     new_cam = _shallow_copy(common_attn_metadata)
                     new_cam.num_actual_tokens = sum_L
                     new_cam.max_query_len = max_L
@@ -2646,7 +2593,7 @@ class SpecSteerProposer(DraftModelProposer):
 
                     # slot_mapping: unified per-req loop. At N=1 the loop runs
                     # once with j=0, ri=0, la=L_aug, producing same arithmetic
-                    # as v0.7's single-shot code (block_ids * block_size + pos % block_size).
+                    # as the single-request block addressing expression.
                     slot_pieces = []
                     for j, (ri, _, _, _, la) in enumerate(per_req_aug):
                         row_j = new_cam.block_table_tensor[ri]
@@ -2676,14 +2623,14 @@ class SpecSteerProposer(DraftModelProposer):
                         if len(args) > 2: args = args[:2] + (new_hidden_states,) + args[3:]
                         if len(args) > 5: args = args[:5] + (new_cam,) + args[6:]
                     # Per-req sample-last indices: position offsets[i+1]-1.
-                    # At N=1 with offsets=[0, L_aug] → [L_aug - 1] same as v0.7.
+                    # At N=1 with offsets=[0, L_aug], this is [L_aug - 1].
                     self._stashed_token_indices_to_sample = torch.tensor(
                         [offsets[i + 1] - 1 for i in range(num_reqs)],
                         dtype=torch.int32, device=device,
                     )
 
                     # Forward-merged path: aug-prefill (incremental) + K
-                    # decodes in one fused call. Replaces the legacy [F1
+                    # decodes in one fused call. Replaces separate
                     # bonus + F2 prefill_(L+1) + (K-1) decodes] sequence.
                     # Only valid when spec-decode driver supplied LLM bonus
                     # in next_token_ids; otherwise this is the initial step
@@ -2708,7 +2655,7 @@ class SpecSteerProposer(DraftModelProposer):
                     # ===== Unified decode-shift OR aug==main path (N≥1) =====
                     # Hot path: runs every decode iteration. Batched ops only
                     # (no Python loops, no .item() syncs); N=1 degenerates to
-                    # single-row tensor ops equivalent to v0.7's BS=1 path.
+                    # single-row tensor operations at BS=1.
                     new_cam = _shallow_copy(common_attn_metadata)
                     new_cam.block_table_tensor = drafter_bt.get_device_tensor(num_reqs)
                     block_size = drafter_bt.block_size
@@ -2733,7 +2680,7 @@ class SpecSteerProposer(DraftModelProposer):
                         offsets_gpu = offsets_cpu.to(device, non_blocking=True)
                         # (N, tpr) + (N, 1) → broadcast → flatten to (N*tpr,)
                         # At N=1 reshapes are free views; final tensor is
-                        # equivalent to v0.7's `target_positions + scalar`.
+                        # equivalent to adding one scalar offset at BS=1.
                         shifted_positions = (
                             target_positions.view(num_reqs, tpr)
                             + offsets_gpu.to(target_positions.dtype).view(num_reqs, 1)
@@ -2759,7 +2706,7 @@ class SpecSteerProposer(DraftModelProposer):
                     # gather along dim=1 produces (N, tpr) of block_ids; slot =
                     # block_id * block_size + pos % block_size, all batched.
                     # At N=1 this is one (1, max_blocks).gather((1, tpr)) call,
-                    # same arithmetic as v0.7's `row[pos // bs]` indexing.
+                    # same arithmetic as `row[pos // block_size]` indexing.
                     pos_2d = pos_int32.view(num_reqs, tpr)
                     block_idx = (pos_2d // block_size).to(torch.int64)
                     block_ids = new_cam.block_table_tensor.gather(1, block_idx)
@@ -2803,7 +2750,7 @@ class SpecSteerProposer(DraftModelProposer):
                 # _aug_bonus_computed + _base_prefilled for that rid so the
                 # bonus is recomputed and base re-prefilled to cover the
                 # chunk's new main tokens. Single-chunk requests see no
-                # growth → no invalidation → byte-identical to v0.10 baseline.
+                # growth → no invalidation in the non-streaming path.
                 aug_ids_by_idx: dict[int, list[int]] = {}
                 for i, req_id_i in enumerate(req_ids[:input_batch.num_reqs]):
                     req = self.runner.requests.get(req_id_i)
@@ -2822,8 +2769,7 @@ class SpecSteerProposer(DraftModelProposer):
                 # COLLECT pending requests needing aug-bonus replacement, then
                 # invoke a SINGLE batched _compute_aug_first_bonus call. At
                 # num_reqs==1 with one pending req, the batched call degenerates
-                # to v0.7's single-req shape (see _compute_aug_first_bonus
-                # docstring) so output is bf16 byte-identical.
+                # to a single-request shape (see _compute_aug_first_bonus).
                 pending: list[tuple[int, str, list[int]]] = []  # (slot_i, req_id, aug_ids)
                 for i, req_id_i in enumerate(req_ids[:input_batch.num_reqs]):
                     if req_id_i in self._aug_bonus_computed:
@@ -2856,11 +2802,11 @@ class SpecSteerProposer(DraftModelProposer):
                     kwargs["next_token_ids"] = next_token_ids
                     if len(args) > 3:
                         args = args[:3] + (next_token_ids,) + args[4:]
-        # PROFILE: end of Phase 2 Z cam/bonus setup (segment A)
+        # End context-swap/bonus profile segment.
         if self._profile_enabled and hasattr(self, "_prof_swap_pair"):
             self._prof_end(self._prof_swap_pair)
             self._prof_swap_pair = None
-        # v0.10.mm Patch 4: inject mm_embed_inputs so Eagle's drafter prefill
+        # Inject multimodal embeddings so Eagle's drafter prefill
         # uses image embeddings (line 441 of eagle.py). Without this, drafter
         # treats image_pad tokens as ordinary text → wrong logits → KV pollution.
         # Only fires for prefill step with mm reqs; decode steps use cached KV.
@@ -2908,26 +2854,26 @@ class SpecSteerProposer(DraftModelProposer):
                     kwargs["mm_embed_inputs"] = (
                         mm_embeds_list_inj, is_mm_mask)
                     # Force Eagle into mm-aware embed path
-                    self._patch4_orig_supports_mm = getattr(
+                    self._saved_supports_mm = getattr(
                         self, "supports_mm_inputs", False)
                     self.supports_mm_inputs = True
                     logger.info(
-                        "Patch4: injected mm_embed_inputs n_imgs=%d "
+                        "AsymSpec: injected mm_embed_inputs n_imgs=%d "
                         "is_mm_count=%d input_len=%d (forced supports_mm=True)",
                         len(mm_embeds_list_inj),
                         int(is_mm_mask.sum()),
                         input_ids_t.shape[0])
             except Exception as e:
                 logger.warning(
-                    "Patch4: mm_embed_inputs construction failed: %r", e)
+                    "AsymSpec: mm_embed_inputs construction failed: %r", e)
         # PROFILE: super().propose() drafter K forwards (segment B)
         _prof_B = self._prof_start("B_super_propose")
         draft_token_ids = super().propose(*args, **kwargs)
         self._prof_end(_prof_B)
-        # Restore supports_mm_inputs after Eagle prefill (Patch 4 cleanup)
-        if hasattr(self, "_patch4_orig_supports_mm"):
-            self.supports_mm_inputs = self._patch4_orig_supports_mm
-            del self._patch4_orig_supports_mm
+        # Restore supports_mm_inputs after Eagle prefill.
+        if hasattr(self, "_saved_supports_mm"):
+            self.supports_mm_inputs = self._saved_supports_mm
+            del self._saved_supports_mm
 
         # PATH-B MODE: populate _base_logits_per_pos from PV (dual's base
         # was skipped). Also keep log diag for verification.

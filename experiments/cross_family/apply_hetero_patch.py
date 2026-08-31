@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Apply AsymSpec heterogeneous-vocabulary edits (E0-E4, E6) to the active
-vLLM 0.19 installation. Idempotent: skips if marker present. Backs up
-pristine files to *.orig_hetero. All behavior behind ASYMSPEC_HETERO_VOCAB=1.
-Design doc: ``experiments/cross_family/HETERO_DESIGN.md``.
+"""Apply the cross-vocabulary AsymSpec extension to vLLM 0.19.0.
+
+The operation is idempotent, saves pristine files as ``*.orig_hetero``, and
+gates all new behavior behind ``ASYMSPEC_HETERO_VOCAB=1``. See the directory
+README for setup and supported model pairs.
 """
 import shutil, sys, py_compile
 from pathlib import Path
@@ -11,7 +12,7 @@ import vllm
 V = Path(vllm.__file__).resolve().parent
 MODEL = str(V / "v1" / "spec_decode" / "specsteer_model.py")
 SAMPLER = str(V / "v1" / "sample" / "specsteer_sampler.py")
-MARK = "HETERO (USD-AsymSpec)"
+MARK = "HETERO (AsymSpec)"
 
 
 def patch(path, edits):
@@ -37,7 +38,7 @@ E0_OLD = """        # SpecSteer path — dual_forward base was an early experime
 E0_NEW = """        # SpecSteer path — dual_forward base was an early experiment and is
         # always skipped here.
         self._pathb_skip_dual_base: bool = True
-        # ---- HETERO (USD-AsymSpec): cross-vocabulary drafter/verifier ----
+        # ---- HETERO (AsymSpec): cross-vocabulary drafter/verifier ----
         # ASYMSPEC_HETERO_VOCAB=1 + ASYMSPEC_HETERO_MAP=<pt>. a2b: exact
         # draft->target (drafts intersection-masked in _greedy_sample so the
         # exact map always hits). b2a_sur: TOTAL target->draft surrogate
@@ -57,7 +58,7 @@ E0_NEW = """        # SpecSteer path — dual_forward base was an early experime
                 _mp, int((_hm["a2b"] >= 0).sum()),
                 _hm["meta"]["V_A"], _hm["meta"]["V_B"])"""
 
-E1_OLD = """        # Phase 1 + Phase 2 Option Z: drafter in gid=1 with aug-space when"""
+E1_OLD = """        # Asymmetric-context setup: drafter in gid=1 with aug-space when"""
 E1_NEW = """        # HETERO E1: the engine streams committed tokens in TARGET vocab;
         # everything below this wrapper feeds drafter/base only. Translate to
         # drafter vocab via the total surrogate map. Prefill positions become
@@ -76,7 +77,7 @@ E1_NEW = """        # HETERO E1: the engine streams committed tokens in TARGET v
                 if len(args) > 3:
                     args = args[:3] + (next_token_ids,) + args[4:]
 
-        # Phase 1 + Phase 2 Option Z: drafter in gid=1 with aug-space when"""
+        # Asymmetric-context setup: drafter in gid=1 with aug-space when"""
 
 E2_OLD = """        logits = self.model.compute_logits(hidden_states)
         self._draft_logits_per_pos.append(logits.detach())
@@ -103,6 +104,52 @@ E3_NEW = """        self._prof_report_if_due()
             assert int(_mapped.min()) >= 0, "hetero draft outside intersection"
             return _mapped.to(draft_token_ids.dtype)
         return draft_token_ids"""
+
+E5_OLD = """        logits = self.model.compute_logits(last_hidden)
+        argmax_per_req = logits.argmax(dim=-1).tolist()  # list[int], length=len(valid)"""
+E5_NEW = """        logits = self.model.compute_logits(last_hidden)
+        if getattr(self, "_hetero", False):
+            # Gate-A predictions originate in drafter space but replace
+            # verifier-space bonus ids. Restrict them to the exact map and
+            # translate before returning.
+            sampled = logits.masked_fill(
+                self._h_suppress_a.unsqueeze(0), float("-inf")).argmax(dim=-1)
+            sampled = self._h_a2b[sampled.long()]
+            assert int(sampled.min()) >= 0, "hetero bonus outside intersection"
+            argmax_per_req = sampled.tolist()
+        else:
+            argmax_per_req = logits.argmax(dim=-1).tolist()"""
+
+F1_OLD = """        bonus_logits = self.model.compute_logits(last_hidden)
+        bonus_per_req = bonus_logits.argmax(dim=-1)  # (N_valid,) int"""
+F1_NEW = """        bonus_logits = self.model.compute_logits(last_hidden)
+        if getattr(self, "_hetero", False):
+            bonus_logits = bonus_logits.masked_fill(
+                self._h_suppress_a.unsqueeze(0), float("-inf"))
+        bonus_per_req = bonus_logits.argmax(dim=-1)  # drafter-space ids"""
+
+F2_OLD = """            new_drafts = draft_logits.argmax(dim=-1)  # (N_valid,) int"""
+F2_NEW = """            sample_logits = draft_logits
+            if getattr(self, "_hetero", False):
+                sample_logits = sample_logits.masked_fill(
+                    self._h_suppress_a.unsqueeze(0), float("-inf"))
+            new_drafts = sample_logits.argmax(dim=-1)  # drafter-space ids"""
+
+F3_OLD = """                        self._prof_end(self._prof_swap_pair)
+                        self._prof_swap_pair = None
+                        return merged_drafts"""
+F3_NEW = """                        self._prof_end(self._prof_swap_pair)
+                        self._prof_swap_pair = None
+                        if getattr(self, "_hetero", False):
+                            mapped = self._h_a2b[merged_drafts.long()]
+                            assert int(mapped.min()) >= 0, (
+                                "hetero fast-path draft outside intersection")
+                            return mapped.to(merged_drafts.dtype)
+                        return merged_drafts"""
+
+F4_OLD = """                if getattr(self, "_use_fast_base_fwd", False):"""
+F4_NEW = """                if (getattr(self, "_use_fast_base_fwd", False)
+                        and not getattr(self, "_hetero", False)):"""
 
 E4_OLD = """            if req_id_i not in self._base_prefilled:
                 start_pos_i = 0
@@ -160,12 +207,6 @@ E4_NEW = """            if req_id_i not in self._base_prefilled:
                         [int(token_ids_i[-1])] + nt_list + drafts_per_req[i]
                     )"""
 
-E4F_OLD = """    def _base_forward_fast(
-        self,"""
-E4F_NEW = """    def _base_forward_fast(
-        self,"""
-# fast path guard is inserted via its docstring end instead (see below).
-
 E4G_OLD = """    def _base_mirror_forward(
         self,
         target_token_ids: torch.Tensor,
@@ -179,7 +220,7 @@ E4G_NEW = """    def _base_mirror_forward(
         common_attn_metadata,
     ) -> torch.Tensor | None:
         assert not getattr(self, "_hetero", False), (
-            "HETERO (USD-AsymSpec): dual/mirror base path unsupported; "
+            "HETERO (AsymSpec): dual/mirror base path unsupported; "
             "PathB PV is the only hetero base path")"""
 
 model_edits = [
@@ -187,6 +228,11 @@ model_edits = [
     ("E1 suffix translate", E1_OLD, E1_NEW),
     ("E2 drafting mask", E2_OLD, E2_NEW),
     ("E3 draft id map", E3_OLD, E3_NEW),
+    ("E5 Gate-A bonus map", E5_OLD, E5_NEW),
+    ("F1 fast-path bonus mask", F1_OLD, F1_NEW),
+    ("F2 fast-path draft mask", F2_OLD, F2_NEW),
+    ("F3 fast-path draft map", F3_OLD, F3_NEW),
+    ("F4 heterogeneous base path", F4_OLD, F4_NEW),
     ("E4 base prefill/incremental", E4_OLD, E4_NEW),
     ("E4g mirror guard", E4G_OLD, E4G_NEW),
 ]
@@ -197,7 +243,7 @@ S1_OLD = """    assert draft_token_ids.ndim == 1
     assert target_logits.shape == aug_logits.shape == base_logits.shape"""
 S1_NEW = """    assert draft_token_ids.ndim == 1
     assert target_logits.ndim == aug_logits.ndim == base_logits.ndim == 2
-    # HETERO (USD-AsymSpec): drafter logits live in the DRAFTER vocab; only
+    # HETERO (AsymSpec): drafter logits live in the DRAFTER vocab; only
     # the row counts must agree with the target.
     _hetero = os.environ.get("ASYMSPEC_HETERO_VOCAB", "0") == "1"
     if _hetero:
@@ -226,12 +272,17 @@ S2_OLD = """    _delta_src = os.environ.get("ASYMSPEC_DELTA_SRC", "ours")
     p_base = b_log.exp().gather(-1, idx).squeeze(-1)"""
 S2_NEW = """    _delta_src = os.environ.get("ASYMSPEC_DELTA_SRC", "ours")
     if _hetero:
-        # HETERO (USD-AsymSpec): delta lives in the drafter vocab; scatter it
+        # HETERO (AsymSpec): delta lives in the drafter vocab; scatter it
         # into the target vocab over the exact-map pairs (unmapped target ids
         # keep their own logit, i.e. delta=0 — additive signal, NOT -inf).
         # Emission (fused argmax) is masked to allow_b: intersection image +
         # verifier eos specials, so every committed token maps 1:1 back.
         _m = _hetero_map(device)
+        if _m["dst_b"].numel():
+            assert int(_m["dst_b"].min()) >= 0
+            assert int(_m["dst_b"].max()) < target_logits.shape[-1]
+            assert int(_m["src_a"].min()) >= 0
+            assert int(_m["src_a"].max()) < aug_logits.shape[-1]
         if _delta_src == "ours":
             delta_a = a_log - b_log
         elif _delta_src == "raw_aug":
@@ -245,11 +296,26 @@ S2_NEW = """    _delta_src = os.environ.get("ASYMSPEC_DELTA_SRC", "ours")
         fused[:, _m["dst_b"]] += beta * delta_a[:, _m["src_a"]]
         fused.masked_fill_(~_m["allow_b"].unsqueeze(0), float("-inf"))
         fused_argmax = fused.argmax(dim=-1)
-        idx = draft_token_ids.to(torch.int64).unsqueeze(-1)      # B-space
-        d_a = _m["b2a"][draft_token_ids.to(torch.int64)]
+        draft_b = draft_token_ids.to(torch.int64)
+        if draft_b.numel():
+            assert int(draft_b.min()) >= 0
+            assert int(draft_b.max()) < target_logits.shape[-1]
+        idx = draft_b.unsqueeze(-1)                              # B-space
+        d_a = _m["b2a"][draft_b]
         assert int(d_a.min()) >= 0, "hetero draft id not in intersection"
         p_llm  = t_log.exp().gather(-1, idx).squeeze(-1)
         p_base = b_log.exp().gather(-1, d_a.unsqueeze(-1)).squeeze(-1)
+
+        # A verifier bonus outside the exact shared map cannot be fed back to
+        # the drafter losslessly, so omit it when every draft is accepted.
+        bonus_b = bonus_token_ids.to(torch.int64)
+        bonus_in_range = ((bonus_b >= 0)
+                          & (bonus_b < _m["allow_b"].numel()))
+        bonus_ok = torch.zeros_like(bonus_in_range)
+        bonus_ok[bonus_in_range] = _m["allow_b"][bonus_b[bonus_in_range]]
+        bonus_token_ids = torch.where(
+            bonus_ok, bonus_token_ids,
+            torch.full_like(bonus_token_ids, PLACEHOLDER_TOKEN_ID))
     else:
         if _delta_src == "ours":
             delta = a_log - b_log
@@ -274,7 +340,7 @@ S0_NEW = """_HETERO_CACHE: dict = {}
 
 
 def _hetero_map(device):
-    \"\"\"HETERO (USD-AsymSpec): lazily load the vocab map onto `device`.\"\"\"
+    \"\"\"HETERO (AsymSpec): lazily load the vocab map onto ``device``.\"\"\"
     key = str(device)
     if key not in _HETERO_CACHE:
         _m = torch.load(os.environ["ASYMSPEC_HETERO_MAP"], map_location="cpu")
@@ -295,8 +361,3 @@ sampler_edits = [
 patch(MODEL, model_edits)
 patch(SAMPLER, sampler_edits)
 print("ALL PATCHES APPLIED")
-
-# NOTE(2026-07-10): reverse-pair (Qwen drafter->Llama verifier) also needs
-# E5 Gate-A bonus map + sampler bounds guards + fast-base bypass; these were
-# applied directly to the copy env (see specsteer_model.py _compute_aug_first_bonus
-# hetero branch and specsteer_sampler.py hetero gather guards).

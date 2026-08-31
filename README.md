@@ -27,7 +27,7 @@ vllm_specsteer/              AsymSpec patches for vLLM 0.19.0
 scripts/deploy_specsteer.py  Patch deployment and rollback helper
 scripts/bench_*.py           Paper benchmark harnesses
 scripts/asym_smolagents/     GAIA and SimpleQA agentic harnesses
-experiments/                 Compression and analysis utilities
+experiments/                 Compression and portability utilities
 experiments/cross_family/    Qwen--Llama portability implementation
 configs/paper.yaml           Camera-ready default configurations
 ```
@@ -119,14 +119,14 @@ python scripts/bench_lb.py --mode specsteer --slm 4B --K 2 \
   --responses outputs/longbench/responses.jsonl
 
 # MultiChallenge
-python scripts/bench_mc_v07.py --mode specsteer --slm 4B --K 2 \
+python scripts/bench_multichallenge.py --mode specsteer --slm 4B --K 2 \
   --beta 1.0 --gamma 0.5 --asym_method jsd \
   --main_context summary_last_k --last_k 1 \
   --cell asymspec --out outputs/multichallenge/metrics.json \
   --responses outputs/multichallenge/responses.jsonl
 
 # API-Bank Method A
-python scripts/bench_apibank_v2.py --mode specsteer --slm 1.7B --K 2 \
+python scripts/bench_apibank.py --mode specsteer --slm 1.7B --K 2 \
   --beta 1.0 --gamma 0.5 --asym_method jsd \
   --main_compression name_sig --max_new 256 \
   --cell asymspec --out outputs/apibank/metrics.json \
@@ -139,7 +139,7 @@ python scripts/bench_mathvista.py --cfg ss --K 4 --beta 1.0 \
 
 The agentic entry points are
 `scripts/asym_smolagents/run_gaia_web.py` and
-`scripts/asym_smolagents/run_benchmark100.py` (SimpleQA). Their defaults match
+`scripts/asym_smolagents/run_simpleqa.py`. Their defaults match
 the paper: CDA via `jsd`, LLMLingua-2 ratio 0.3, two recent turns retained,
 and `K=2`.
 

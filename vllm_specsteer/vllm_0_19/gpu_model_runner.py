@@ -3376,7 +3376,7 @@ class GPUModelRunner(
     ):
         """SpecSteer greedy sampler dispatch.
 
-        Phase 1 invariant: main==aug. Drafter logits (captured by
+        Symmetric fallback: main==aug. Drafter logits (captured by
         SpecSteerProposer._greedy_sample) serve as both aug_logits and
         base_logits → δ ≈ 0 → fused_argmax ≈ target argmax. The γ-rule
         (p_llm > γ·p_base) is active, which is where this path diverges
@@ -3431,7 +3431,7 @@ class GPUModelRunner(
             return self.rejection_sampler(metadata, None, logits, sampling_metadata)
         aug_logits = stacked.view(num_tokens, V).to(torch.float32)
 
-        # Phase 2: base_logits from SLM_base (PathB incremental KV).
+        # Base logits from SLM_base (Path B incremental KV).
         base_list = getattr(self.drafter, "_base_logits_per_pos", None)
         if base_list and len(base_list) == K:
             base_stacked = torch.stack(base_list, dim=1).contiguous()

@@ -30,7 +30,7 @@ if not os.environ.get("HF_TOKEN"):
 
 VL_PATH = "Qwen/Qwen3-VL-2B-Instruct"
 TEXT_PATH = "Qwen/Qwen3-32B"
-OUT_DIR = f"{_REPO}/experiments/gaia_vl_2026-05-24"
+OUT_DIR = f"{_REPO}/outputs/gaia_vl"
 MAX_OUT_TOKENS = 1024
 COT_SUFFIX = "\nThink step by step, then provide the final answer after 'Answer:'."
 
@@ -121,7 +121,7 @@ def _verifier_tok():
     return _VERIFIER_TOK
 
 
-CAPTION_PATH = f"{_REPO}/experiments/gaia_vl_2026-05-24/captions.json"
+CAPTION_PATH = f"{OUT_DIR}/captions.json"
 
 
 def _load_captions() -> dict:

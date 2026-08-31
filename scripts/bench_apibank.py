@@ -1,6 +1,7 @@
 """API-Bank L1+L2 per-call bench with BM25 retrieval.
 
-Mirrors `bench_lb.py` / `bench_mc_v07.py` (sync LLM, single-pass per sample).
+Mirrors `bench_lb.py` / `bench_multichallenge.py` (sync LLM, single-pass per
+sample).
 Each "sample" comes from API-Bank's `Sample.from_chat_history`: every API
 call position in a dialog generates two samples (one for the API call
 prediction, one for the AI text response).
@@ -242,13 +243,14 @@ def main():
                     help="b1_drafter_aug=drafter(SLM) alone on the FULL API "
                          "spec (B1); "
                          "classical_sps_main=classical SD with verifier+drafter "
-                         "both on the COMPRESSED API spec (Phase 2.1 fair-cost "
+                         "both on the COMPRESSED API spec (fair-cost "
                          "compressed-SD baseline); "
                          "scd=Speculative Contrastive Decoding baseline, "
                          "expert(32B)/amateur(SLM) on the SAME "
                          "compressed main spec (B3)")
     ap.add_argument("--asym_method", default="jsd",
-                    choices=["gamma_rule", "fmw_v2", "selective", "counterfactual", "ar_feedback", "cma", "far", "vaa", "jsd", "jsd_pos", "cma_vnorm", "cma_hbase"])
+                    choices=["gamma_rule", "cma", "jsd", "jsd_pos",
+                             "cma_vnorm", "cma_hbase"])
     ap.add_argument("--delta_src", default="ours",
                     choices=["ours", "raw_aug", "scd"],
                     help="δ-source ablation (specsteer mode); forced to 'scd' "
@@ -287,22 +289,19 @@ def main():
     ap.add_argument("--last_k", type=int, default=2)
     ap.add_argument("--early_summary_cap", type=int, default=200)
     ap.add_argument("--recent_trunc_n", type=int, default=1024)
-    # Method A/B: compress the main API spec instead of retrieving top-K.
-    #   topK         → top-K retrieved JSON specs (legacy behavior, NOT paper)
+    # Main-context compression choices.
+    #   topK         → top-K retrieved JSON specs (ablation)
     #   name_sig     → all 52 APIs as "[Tool] Name(p1, p2)"  (~584 tok) ← Method A, PAPER CANONICAL
     #   name_sig_desc→ all 52 APIs as name+sig+1-line desc    (~1322 tok)
-    # 2026-05-13: default changed topK → name_sig to match paper Tab 4
-    # ("API-Bank Method A, ~10× compression"). All paper-headline APIB cells
-    # (v010_apib_method_a/, asym_ablation/apib_methodA_ablation/) use name_sig.
-    # CMA_RESULTS.md reproduce commands prior to 2026-05-13 silently ran topK
-    # via the old default; those numbers (32.4%/31.8%) are NOT paper-canonical.
+    # name_sig is the paper configuration (API-Bank Method A, roughly 10x
+    # compression).
     ap.add_argument("--main_compression", default="name_sig",
                     choices=["topK", "name_sig", "name_sig_desc"])
     args = ap.parse_args()
 
     SLM_PATH = slm_model(args.slm)
 
-    # Spec metrics monkey-patch (mirrors bench_lb / bench_mc_v07).
+    # Spec metrics monkey-patch (mirrors the other text benchmarks).
     import vllm.config.speculative as _sc
     _sc.SpeculativeConfig.verify_equal_vocab_size_if_draft_model = (
         lambda self: None
@@ -315,7 +314,7 @@ def main():
     def _capture(self, *args, **kwargs):
         # vLLM signature changed: observe_draft now takes
         # (num_draft_tokens, num_accepted_tokens) — accept either positional
-        # or keyword (vLLM's caller passes as keyword as of v0.19+).
+        # or keyword (vLLM 0.19 passes these values by keyword).
         ndt = kwargs.get("num_draft_tokens", args[0] if args else 0)
         nat = kwargs.get("num_accepted_tokens", args[1] if len(args) > 1 else 0)
         SPEC["drafts"] += 1
@@ -443,7 +442,7 @@ def main():
     print(f"[setup] loading LLM (K={args.K})...", flush=True)
     llm = LLM(**eng_kwargs)
     if args.mode in ("specsteer", "scd"):
-        # _pathb_skip_dual_base now defaults to True in v0.10 __init__
+        # Incremental base-model evaluation is enabled by default.
         print("[setup] SpecSteer Path B enabled", flush=True)
 
     # Build all samples

@@ -1,10 +1,10 @@
-# SpecSteer vLLM Implementation Notes
+# AsymSpec vLLM Implementation Notes
 
-This document describes how SpecSteer is implemented in our vLLM fork (v0.10), focusing on the non-trivial efficient base-model evaluation (PathB) and its mathematical equivalence to the naive formulation.
+This document describes the AsymSpec integration for vLLM 0.19.0, focusing on efficient compressed-context drafter evaluation (Path B) and its mathematical equivalence to full re-prefill.
 
 ## 1. Algorithm recap
 
-Per speculation step, SpecSteer requires three forwards:
+Per speculation step, AsymSpec requires three forwards:
 
 | Forward | Model | Input | Purpose |
 |---|---|---|---|
@@ -19,7 +19,7 @@ accept_i  iff  p_llm(draft_i) > γ · p_base(draft_i)
 on reject: emit argmax( log p_llm + β · (log p_aug − log p_base) )
 ```
 
-The third forward (`SLM_base on main_prompt`) is what distinguishes SpecSteer from standard SpS — it provides a "what would the small model think on the same context as the verifier?" reference for the γ-rule.
+The third forward (`SLM_base on main_prompt`) is what distinguishes AsymSpec from standard speculative decoding: it provides the drafter's compressed-context reference for CDA and delta fusion.
 
 ## 2. Two implementation strategies for the base forward
 
@@ -131,10 +131,10 @@ All three share vLLM's block-pool / page table machinery but write to different 
 
 ```
 SpecSteerProposer.propose(args, kwargs):
-    # Phase 1: drafter K-step forward (already incremental via vLLM)
+    # Draft stage: K-token drafter forward (already incremental via vLLM)
     draft_token_ids = super().propose(...)            # standard SpS path
 
-    # Phase 2: PathB base evaluation  (the optimization in this doc)
+    # Base stage: Path B evaluation (the optimization in this document)
     pv_logits = self._base_parallel_verify(            # K+1 logits at L..L+K
         drafts_flat,
         next_token_ids=next_token_ids,                 # LLM-sampled bonus
@@ -162,22 +162,22 @@ SpecSteer PathB step t: B=1 K=2 aug=151645 pv=330  |pv-aug|=13.250
 
 `|pv-aug|` shows the **expected** difference between SLM-on-aug and SLM-on-main (different contexts ⇒ different logits — this is the whole point of SpecSteer). When PathB is implementation-correct, this difference is positive and stable across steps.
 
-A separate (deferred) ablation harness compares PathB output against Strategy A for a small number of steps, asserting `|pv_A - pv_B|_max < 1e-3`. This is run as a regression test when modifying spec-decode internals.
+A numerical regression check can compare Path B output against Strategy A for a small number of steps, asserting `|pv_A - pv_B|_max < 1e-3` when modifying speculative-decoding internals.
 
 ## 7. Why this is the default
 
-There is no semantic difference between A and B — only efficiency. Strategy A is a strawman; no production deployment would use it. We document Strategy A only to explain what the original SpecSteer paper's per-step description literally says, and to make the optimization explicit.
+There is no semantic difference between A and B, only an efficiency difference. Strategy A is included to make the cache optimization explicit; practical deployments should use Path B.
 
 PathB is on by default (`_pathb_skip_dual_base = True`) and we recommend leaving it on. The dual-base path is retained only for regression testing.
 
-## 8. Paper write-up suggestion
+## 8. Efficient implementation summary
 
 A 1-2 paragraph treatment in the "Efficient Implementation" section:
 
-> **Incremental Base-Model Evaluation.** The SpecSteer formulation requires evaluating SLM_base on the verifier's main context at each speculation step (Eq. X). A naive implementation re-prefills SLM_base on the full main_prompt every step, costing O(L_main + K) per step. We instead maintain SLM_base's KV cache across speculation steps in vLLM's standard block-paged structure, and forward only the K newly drafted tokens — costing O(K) per step. The two formulations produce mathematically identical logits at the drafted positions (modulo bf16 precision ~1e-3) by the standard KV-cache sufficiency property of causal self-attention. This optimization is essential for long-context workloads (L_main > 1K), where the naive formulation would dominate runtime.
+AsymSpec maintains the base drafter's KV cache across speculation steps and forwards only the newly drafted tokens, reducing the per-step base pass from O(L_main + K) to O(K). The full-prefill and cached formulations produce mathematically equivalent logits at the drafted positions, modulo ordinary finite-precision effects, by the standard KV-cache sufficiency property of causal self-attention.
 
 ## References
 
-- Original SpecSteer formulation: `vllm_specsteer/v0.10/specsteer_model.py` docstring (lines 1-50)
+- Release implementation: `vllm_specsteer/vllm_0_19/specsteer_model.py`
 - vLLM incremental decoding (general): `vllm/v1/worker/gpu_model_runner.py` — same KV cache pattern applied to LLM verifier
 - Code: `SpecSteerProposer._base_parallel_verify` (line ~806) and `SpecSteerProposer.propose` (line ~2114)

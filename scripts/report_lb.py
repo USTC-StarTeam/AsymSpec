@@ -79,7 +79,7 @@ def main():
     cells.sort(key=sort_key)
 
     # Markdown table
-    print("\n# LongBench v0.8 K-Sweep Results\n")
+    print("\n# LongBench Results\n")
     print(f"Experiment dir: `{args.exp_dir}`\n")
     cols = ["cell", "K", "n", "tps", "AR", "MAL",
             "F1_hotpot", "F1_2wiki", "F1_musique", "F1_mean",

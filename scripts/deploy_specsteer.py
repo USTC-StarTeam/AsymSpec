@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
-"""Deploy SpecSteer patches into the installed vLLM package.
+"""Deploy the AsymSpec patches into the installed vLLM package.
 
-Hot-patches vLLM's pip-installed location. No vLLM fork needed —
-``vllm_specsteer/<ver>/`` contains the .py files to overwrite.
-
-Default version: ``v0.10.mm`` (multimodal — superset of text-only v0.10).
-Override with ``--ver v0.10`` for text-only.
+Hot-patches vLLM's pip-installed location. No vLLM fork is required.
+``vllm_specsteer/vllm_0_19/`` is the single release patch set and supports
+both text and multimodal drafters.
 
 Files deployed:
-  vllm_specsteer/<ver>/specsteer_model.py   → vllm/v1/spec_decode/specsteer_model.py
-  vllm_specsteer/<ver>/specsteer_sampler.py → vllm/v1/sample/specsteer_sampler.py
-  vllm_specsteer/v0.10.mm/eagle_patch.py    → vllm/v1/spec_decode/eagle.py  (mm only)
+  specsteer_model.py  → vllm/v1/spec_decode/specsteer_model.py
+  specsteer_sampler.py → vllm/v1/sample/specsteer_sampler.py
+  eagle.py → vllm/v1/spec_decode/eagle.py
+  speculative.py → vllm/config/speculative.py
+  gpu_model_runner.py → vllm/v1/worker/gpu_model_runner.py
 
-Originals are backed up to ``.backups/vllm_specsteer_<ver>/`` before being
-overwritten. ``--revert`` restores them.
+Originals are backed up before being overwritten. ``--revert`` restores them.
 
 Usage:
   python scripts/deploy_specsteer.py --check
-  python scripts/deploy_specsteer.py --apply             # default v0.10.mm
-  python scripts/deploy_specsteer.py --apply --ver v0.10 # text-only
+  python scripts/deploy_specsteer.py --apply
   python scripts/deploy_specsteer.py --revert
 """
 import argparse
@@ -32,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from paths import REPO_ROOT, vllm_specsteer_targets
 
 VLLM_SPECSTEER = REPO_ROOT / "vllm_specsteer"
+PATCH_DIR = VLLM_SPECSTEER / "vllm_0_19"
 SUPPORTED_VLLM_VERSION = "0.19.0"
 
 
@@ -56,51 +55,27 @@ def md5_short(path: Path) -> str:
     return hashlib.md5(path.read_bytes()).hexdigest()[:10]
 
 
-def deployment_map(version: str) -> list[tuple[Path, Path]]:
-    """Returns [(source, target), ...] for the given version.
-
-    v0.10:    [specsteer_model, specsteer_sampler]
-    v0.10.mm: [specsteer_model, specsteer_sampler, eagle_patch→eagle,
-               speculative_config_patch→config/speculative.py]
-    """
-    src_dir = VLLM_SPECSTEER / version
-    if not src_dir.exists():
-        raise FileNotFoundError(f"version dir not found: {src_dir}")
-
+def deployment_map() -> list[tuple[Path, Path]]:
+    """Return the complete release patch mapping for vLLM 0.19.0."""
+    if not PATCH_DIR.exists():
+        raise FileNotFoundError(f"patch directory not found: {PATCH_DIR}")
     spec_model_tgt, sampler_tgt = vllm_specsteer_targets()
-    pairs = [
-        (src_dir / "specsteer_model.py", spec_model_tgt),
-        (src_dir / "specsteer_sampler.py", sampler_tgt),
+    vllm_pkg = spec_model_tgt.parents[2]
+    return [
+        (PATCH_DIR / "specsteer_model.py", spec_model_tgt),
+        (PATCH_DIR / "specsteer_sampler.py", sampler_tgt),
+        (PATCH_DIR / "eagle.py", spec_model_tgt.parent / "eagle.py"),
+        (PATCH_DIR / "speculative.py", vllm_pkg / "config" / "speculative.py"),
+        (PATCH_DIR / "gpu_model_runner.py",
+         vllm_pkg / "v1" / "worker" / "gpu_model_runner.py"),
     ]
-    # v0.10.mm only: eagle_patch.py replaces eagle.py (same dir as spec_decode)
-    eagle_src = src_dir / "eagle_patch.py"
-    if eagle_src.exists():
-        eagle_tgt = spec_model_tgt.parent / "eagle.py"
-        pairs.append((eagle_src, eagle_tgt))
-    # v0.10.mm only: speculative.py adds "specsteer" to SpeculativeMethod
-    # Literal + specsteer_beta/gamma fields. vllm_pkg/config/speculative.py.
-    spec_cfg_src = src_dir / "speculative_config_patch.py"
-    if spec_cfg_src.exists():
-        vllm_pkg = spec_model_tgt.parents[2]  # .../vllm/v1/spec_decode → .../vllm
-        spec_cfg_tgt = vllm_pkg / "config" / "speculative.py"
-        pairs.append((spec_cfg_src, spec_cfg_tgt))
-    # v0.10.mm only: gpu_model_runner.py routes method=="specsteer" → SpecSteerProposer
-    # and adds _specsteer_sample method for greedy δ-fusion sampler dispatch.
-    gpu_runner_src = src_dir / "gpu_model_runner_patch.py"
-    if gpu_runner_src.exists():
-        vllm_pkg = spec_model_tgt.parents[2]
-        gpu_runner_tgt = vllm_pkg / "v1" / "worker" / "gpu_model_runner.py"
-        pairs.append((gpu_runner_src, gpu_runner_tgt))
-
-    return pairs
 
 
-def cmd_check(version: str) -> None:
+def cmd_check() -> None:
     installed = validate_vllm_version()
-    print(f"Version:  {version}")
     print(f"vLLM:     {installed} (supported)")
-    print(f"Source:   {(VLLM_SPECSTEER / version).relative_to(REPO_ROOT)}/")
-    pairs = deployment_map(version)
+    print(f"Source:   {PATCH_DIR.relative_to(REPO_ROOT)}/")
+    pairs = deployment_map()
     print(f"Package:  {pairs[0][1].parents[2]}/\n")
     for src, tgt in pairs:
         s_md5 = md5_short(src) if src.exists() else "MISSING   "
@@ -111,9 +86,9 @@ def cmd_check(version: str) -> None:
         print(f"     tgt {t_md5}  {tgt}")
 
 
-def cmd_apply(version: str, backup_dir: Path) -> None:
+def cmd_apply(backup_dir: Path) -> None:
     validate_vllm_version()
-    pairs = deployment_map(version)
+    pairs = deployment_map()
     backup_dir.mkdir(parents=True, exist_ok=True)
     deployed = 0
     skipped = 0
@@ -140,15 +115,15 @@ def cmd_apply(version: str, backup_dir: Path) -> None:
     print(f"\nDeployed {deployed}/{len(pairs)} ({skipped} unchanged).")
     if deployed > 0:
         print(f"Backup:  {backup_dir.relative_to(REPO_ROOT)}/")
-        print(f"Revert:  python scripts/deploy_specsteer.py --revert --ver {version}")
+        print("Revert:  python scripts/deploy_specsteer.py --revert")
 
 
-def cmd_revert(version: str, backup_dir: Path) -> None:
+def cmd_revert(backup_dir: Path) -> None:
     validate_vllm_version()
     if not backup_dir.exists():
         print(f"✗  No backup at {backup_dir}")
         return
-    name_to_tgt = {tgt.name: tgt for _, tgt in deployment_map(version)}
+    name_to_tgt = {tgt.name: tgt for _, tgt in deployment_map()}
     restored = 0
     for bak in backup_dir.iterdir():
         if bak.name in name_to_tgt:
@@ -160,24 +135,23 @@ def cmd_revert(version: str, backup_dir: Path) -> None:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Deploy SpecSteer patches into installed vLLM")
-    ap.add_argument("--ver", default="v0.10.mm", choices=["v0.10", "v0.10.mm"],
-                    help="SpecSteer version (default: v0.10.mm)")
+    ap = argparse.ArgumentParser(
+        description="Deploy AsymSpec patches into the pinned vLLM installation")
     action = ap.add_mutually_exclusive_group(required=True)
     action.add_argument("--check", action="store_true", help="Status only, no changes")
     action.add_argument("--apply", action="store_true", help="Deploy patches (backs up originals)")
     action.add_argument("--revert", action="store_true", help="Restore originals from backup")
     args = ap.parse_args()
 
-    backup_dir = REPO_ROOT / ".backups" / f"vllm_specsteer_{args.ver}"
+    backup_dir = REPO_ROOT / ".backups" / "vllm_0_19"
 
     try:
         if args.check:
-            cmd_check(args.ver)
+            cmd_check()
         elif args.apply:
-            cmd_apply(args.ver, backup_dir)
+            cmd_apply(backup_dir)
         elif args.revert:
-            cmd_revert(args.ver, backup_dir)
+            cmd_revert(backup_dir)
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

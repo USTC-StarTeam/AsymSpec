@@ -67,12 +67,12 @@ class PaperDefaultsTest(unittest.TestCase):
             "--K": 2, "--asym_method": "jsd", "--beta": 1.0,
             "--gamma": 0.5, "--slm": "4B", "--main_context": "summary",
         })
-        self.assert_defaults("scripts/bench_mc_v07.py", {
+        self.assert_defaults("scripts/bench_multichallenge.py", {
             "--K": 2, "--asym_method": "jsd", "--beta": 1.0,
             "--gamma": 0.5, "--slm": "4B", "--n": 271,
             "--main_context": "summary_last_k", "--last_k": 1,
         })
-        self.assert_defaults("scripts/bench_apibank_v2.py", {
+        self.assert_defaults("scripts/bench_apibank.py", {
             "--K": 2, "--asym_method": "jsd", "--beta": 1.0,
             "--gamma": 0.5, "--slm": "1.7B", "--max_new": 256,
             "--main_compression": "name_sig",
@@ -89,13 +89,13 @@ class PaperDefaultsTest(unittest.TestCase):
             "--llmlingua_rate": 0.3, "--keep_last_k": 2,
         }
         self.assert_defaults("scripts/asym_smolagents/run_gaia_web.py", common)
-        self.assert_defaults("scripts/asym_smolagents/run_benchmark100.py", {
+        self.assert_defaults("scripts/asym_smolagents/run_simpleqa.py", {
             **common, "--n": 500,
         })
 
-        source = (ROOT / "scripts/asym_smolagents/run_benchmark100.py").read_text()
+        source = (ROOT / "scripts/asym_smolagents/run_simpleqa.py").read_text()
         self.assertNotIn('asym_method="cma_vnorm"', source)
-        self.assertGreaterEqual(source.count("asym_method=args.asym_method"), 2)
+        self.assertGreaterEqual(source.count("asym_method=args.asym_method"), 1)
 
         for path in ["scripts/bench_gaia_full.py", "scripts/bench_gaia_vl.py"]:
             self.assert_defaults(path, {
@@ -130,11 +130,9 @@ class PaperDefaultsTest(unittest.TestCase):
 
     def test_internal_fallbacks_match_paper_defaults(self):
         files = [
-            "vllm_specsteer/v0.10/specsteer_sampler.py",
-            "vllm_specsteer/v0.10/specsteer_model.py",
-            "vllm_specsteer/v0.10.mm/specsteer_sampler.py",
-            "vllm_specsteer/v0.10.mm/specsteer_model.py",
-            "vllm_specsteer/v0.10.mm/speculative_config_patch.py",
+            "vllm_specsteer/vllm_0_19/specsteer_sampler.py",
+            "vllm_specsteer/vllm_0_19/specsteer_model.py",
+            "vllm_specsteer/vllm_0_19/speculative.py",
         ]
         for relative_path in files:
             source = (ROOT / relative_path).read_text()
@@ -145,7 +143,7 @@ class PaperDefaultsTest(unittest.TestCase):
         for relative_path in [
             "scripts/bench_mathvista.py",
             "scripts/bench_gaia_vl.py",
-            "scripts/asym_smolagents/run_benchmark100.py",
+            "scripts/asym_smolagents/run_simpleqa.py",
         ]:
             source = (ROOT / relative_path).read_text()
             self.assertNotIn('asym_method="gamma_rule"', source)

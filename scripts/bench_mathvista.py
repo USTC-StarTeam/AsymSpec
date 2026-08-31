@@ -1,4 +1,4 @@
-"""MathVista bench for v0.10.mm SpecSteer multimodal.
+"""MathVista multimodal benchmark for AsymSpec and its baselines.
 
 Subset: GPS + VQA + FQA from testmini, restricted to PIDs that have official
 Bard captions (587 samples after filter; 69 VQA dropped).
@@ -26,7 +26,7 @@ CAPS = str(MV_CAPTIONS)
 OCRS = str(MV_OCRS)
 KEEP_TASKS = {"geometry problem solving", "visual question answering",
               "figure question answering"}
-OUT_DIR = "experiments/v010_mathvista"
+OUT_DIR = "outputs/mathvista"
 CAP_TRUNC_CHARS = 1600   # ~400 tok p90
 OCR_TRUNC_CHARS = 800
 MAX_OUT_TOKENS = 1024
@@ -117,7 +117,7 @@ def _verifier_tok():
 
 
 def build_main_prompt(s: dict) -> str:
-    """Apply Qwen3-32B chat template (matches bench_lb / bench_mc convention)."""
+    """Apply the Qwen3-32B chat template used by the text benchmarks."""
     msgs = [{"role": "user", "content": build_main_user_text(s)}]
     return _verifier_tok().apply_chat_template(
         msgs, tokenize=False, add_generation_prompt=True,
@@ -321,10 +321,8 @@ def cfg_d_classical(samples, out_path, K=2):
 
 
 def cfg_ss(samples, out_path, K=4, beta=1.0, gamma=0.5,
-           asym_method="jsd",
-           ar_target=1.5, ar_lambda=3.0, ar_alpha=0.5, ar_init=0.5,
-           beta_clip=(0.5, 3.0)):
-    print(f"\n=== CFG SS: SpecSteer multimodal (v0.10.mm) K={K} β={beta} γ={gamma} method={asym_method} ===")
+           asym_method="jsd"):
+    print(f"\n=== CFG SS: AsymSpec multimodal K={K} β={beta} γ={gamma} method={asym_method} ===")
     from vllm import LLM, SamplingParams
     from transformers import AutoProcessor
     import vllm.config.speculative as _sc
@@ -332,17 +330,9 @@ def cfg_ss(samples, out_path, K=4, beta=1.0, gamma=0.5,
 
     # Asym method dispatch via env var (sampler reads ASYMSPEC_METHOD).
     os.environ["ASYMSPEC_METHOD"] = asym_method
-    # AR-feedback initial state.
-    AR_STATE = {"ema": ar_init, "beta_base": float(beta)}
-    if asym_method == "ar_feedback":
-        beta_init = float(beta) * (1.0 + ar_lambda * (ar_target - ar_init))
-        beta_init = max(beta_clip[0], min(beta_clip[1], beta_init))
-        os.environ["ASYMSPEC_BETA_OVERRIDE"] = f"{beta_init:.4f}"
-        print(f"[ar_feedback] init β_eff={beta_init:.3f} (target={ar_target} init_ema={ar_init})", flush=True)
-    else:
-        os.environ.pop("ASYMSPEC_BETA_OVERRIDE", None)
+    os.environ.pop("ASYMSPEC_BETA_OVERRIDE", None)
 
-    # spec metrics capture (+ AR-feedback EMA update if applicable)
+    # Speculative-decoding metrics capture.
     import vllm.v1.spec_decode.metrics as _sdm
     SPEC = {"drafts": 0, "draft_tokens": 0, "accepted_tokens": 0,
             "per_pos": None}
@@ -360,13 +350,6 @@ def cfg_ss(samples, out_path, K=4, beta=1.0, gamma=0.5,
         for j in range(nat):
             if j < len(SPEC["per_pos"]):
                 SPEC["per_pos"][j] += 1
-        # AR-feedback closed-loop β update
-        if asym_method == "ar_feedback" and ndt > 0:
-            cur_ar = nat / ndt
-            AR_STATE["ema"] = (1 - ar_alpha) * AR_STATE["ema"] + ar_alpha * cur_ar
-            beta_eff = AR_STATE["beta_base"] * (1.0 + ar_lambda * (ar_target - AR_STATE["ema"]))
-            beta_eff = max(beta_clip[0], min(beta_clip[1], beta_eff))
-            os.environ["ASYMSPEC_BETA_OVERRIDE"] = f"{beta_eff:.4f}"
         return _orig(self, *args, **kwargs)
     _sdm.SpecDecodingStats.observe_draft = _capture
 
@@ -505,8 +488,9 @@ def main():
                     help="CANONICAL paper config: β=1.0 (best for MathVista per paper).")
     ap.add_argument("--gamma", type=float, default=0.5)
     ap.add_argument("--asym_method", default="jsd",
-                    choices=["gamma_rule", "fmw_v2", "selective", "counterfactual", "ar_feedback", "cma", "far", "vaa", "jsd", "jsd_pos", "cma_vnorm", "cma_hbase"])
-    ap.add_argument("--tag", default="smoke")
+                    choices=["gamma_rule", "cma", "jsd", "jsd_pos",
+                             "cma_vnorm", "cma_hbase"])
+    ap.add_argument("--tag", default="paper")
     args = ap.parse_args()
 
     samples = load_samples(args.n if args.n > 0 else None)

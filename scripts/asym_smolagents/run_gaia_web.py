@@ -21,11 +21,11 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # for paths.py
-from asym_vllm_model import AsymSpecVLLMModel  # noqa: F401  (re-export for build_model_v2)
+from asym_vllm_model import AsymSpecVLLMModel  # noqa: F401  (used by run_simpleqa)
 from smolagents import CodeAgent, VLLMModel  # noqa: F401
 from cached_tools import (CachedDuckDuckGoSearchTool as DuckDuckGoSearchTool,
                           CachedVisitWebpageTool as VisitWebpageTool)
-from run_benchmark100 import build_model_v2, run_one_question
+from run_simpleqa import build_model, run_one_question
 from paths import LLM_PATH, slm_model, gaia_validation_dir
 
 
@@ -89,8 +89,7 @@ def main():
                     help="skip first N samples (within shard) — for resuming")
     ap.add_argument("--cell_tag", default="",
                     help="suffix for output filename to distinguish runs")
-    ap.add_argument("--out_dir",
-                    default="experiments/v010_smolagents_agent/cache_gaia_web")
+    ap.add_argument("--out_dir", default="outputs/gaia")
     args = ap.parse_args()
 
     levels = [int(x) for x in args.levels.split(",")]
@@ -119,7 +118,7 @@ def main():
 
     # Build model + agent
     t0 = time.perf_counter()
-    model = build_model_v2(args.mode, args)
+    model = build_model(args.mode, args)
     print(f"[setup] model init: {time.perf_counter()-t0:.1f}s")
     agent = CodeAgent(
         tools=[DuckDuckGoSearchTool(), VisitWebpageTool()],

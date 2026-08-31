@@ -2,7 +2,7 @@
 
 For each conversation and each requested ``k``, all but the final ``k`` turns
 are summarized offline. The benchmark then prepends that summary to the final
-turns. Output matches ``scripts/bench_mc_v07.py``.
+turns. Output matches ``scripts/bench_multichallenge.py``.
 """
 from __future__ import annotations
 

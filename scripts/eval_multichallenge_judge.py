@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
-"""MultiChallenge judge wrapper for v0.7 baseline_v07_kSweep responses.
+"""Evaluate MultiChallenge response files with the official judge protocol.
 
-Differs from eval_mc_parallel.py in two ways:
-1. Uses gpt-4o (official MC paper judge) instead of gemini-3-flash-preview.
-2. Does the JOIN: bench_mc_v07.py response files have only {idx, qid, response};
-   the official judge needs target_question, pass_criteria, axis. We load them
-   from data/multi-challenge/data/benchmark_questions.jsonl, key by QUESTION_ID.
+Benchmark response rows contain ``idx``, ``qid``, and ``response``. This
+wrapper joins the target question, pass criterion, and axis from the official
+question file before judging each response.
 
 Per the official MultiChallenge evaluator (ekwinox117/multi-challenge
 src/evaluator.py): YES/NO judgment with the verbatim prompt template.
 
 Usage:
-  python scripts/eval_mc_v07_judge.py <responses1.jsonl> [<responses2.jsonl> ...]
+  python scripts/eval_multichallenge_judge.py <responses1.jsonl> [<responses2.jsonl> ...]
   → writes <name>_judge_report.json next to each input.
 
 Env:
@@ -40,7 +38,7 @@ N_WORKERS = int(os.environ.get("N_WORKERS", "4"))
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "5"))
 DRY = os.environ.get("SWE_DRY") == "1"
 
-client = get_logged_openai_client(user="mc_v07_judge")  # logs every call to api_logs/
+client = get_logged_openai_client(user="multichallenge_judge")
 
 
 def load_mc_index() -> dict:
@@ -130,13 +128,12 @@ def eval_file(resp_path: str, mc_idx: dict):
     rows = [json.loads(l) for l in open(resp_path)]
     print(f"[{os.path.basename(resp_path)}] {len(rows)} responses to judge", flush=True)
 
-    # Two response formats supported:
-    #   v07 kSweep: {qid, response} → JOIN with MC index
-    #   Era #4 legacy: {question_id, response, meta:{axis,target_question,pass_criteria}}
+    # Two response formats are supported: compact benchmark rows joined by
+    # qid, and self-contained rows with embedded evaluation metadata.
     n_no_match = 0
     join_rows = []
     for r in rows:
-        # Format detection: Era #4 has `meta` embedded with criteria
+        # Prefer embedded criteria when present.
         if "meta" in r and isinstance(r.get("meta"), dict) and r["meta"].get("target_question"):
             meta = {
                 "axis": r["meta"].get("axis", "UNK"),
@@ -148,7 +145,7 @@ def eval_file(resp_path: str, mc_idx: dict):
             r_aug["qid"] = r.get("question_id", r.get("qid", "?"))
             join_rows.append((r_aug, meta))
             continue
-        # v07 kSweep format: JOIN by qid
+        # Otherwise join the compact row by qid.
         qid = r.get("qid", r.get("question_id"))
         meta = mc_idx.get(qid)
         if meta is None:

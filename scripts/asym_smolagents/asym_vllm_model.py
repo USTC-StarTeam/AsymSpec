@@ -270,7 +270,7 @@ class AsymSpecVLLMModel(VLLMModel):
         # AsymSpec δ-fusion, drafter's <think>...</think> tokens propagate
         # to verifier output, which smolagents' parser misinterprets as the
         # final answer (causing ~30% format failure). Match bench_lb.py /
-        # bench_mc_v07.py convention by disabling thinking explicitly.
+        # benchmark convention by disabling thinking explicitly.
         actk = dict(kwargs.pop("apply_chat_template_kwargs", None) or {})
         actk.setdefault("enable_thinking", False)
         kwargs["apply_chat_template_kwargs"] = actk

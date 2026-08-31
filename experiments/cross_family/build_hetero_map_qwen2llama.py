@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the Llama-3.2 (drafter, A) <-> Qwen3 (verifier, B) vocab translator.
+"""Build the Qwen3 (drafter, A) to Llama-3.3 (verifier, B) translator.
 
 String-equal token matching over tokenizer vocabs (both byte-level BPE with 'Ġ'
 space sign — verified identical convention, no normalization needed), plus
@@ -63,8 +63,8 @@ allow_b = torch.zeros(V_B, dtype=torch.bool)
 valid = a2b >= 0
 allow_b[a2b[valid]] = True                       # includes specials via pairs
 
-src_a = valid.nonzero(as_tuple=True)[0]          # [n_pairs] Llama ids
-dst_b = a2b[src_a]                               # [n_pairs] Qwen ids
+src_a = valid.nonzero(as_tuple=True)[0]          # [n_pairs] Qwen ids
+dst_b = a2b[src_a]                               # [n_pairs] Llama ids
 
 # roundtrip spot checks
 for probe in ["The", "Ġthe", "Ġanswer", "1", "Ġ1974", ",", "ĠParis"]:
@@ -73,8 +73,8 @@ for probe in ["The", "Ġthe", "Ġanswer", "1", "Ġ1974", ",", "ĠParis"]:
         assert a2b[aid] == bid and b2a[bid] == aid, probe
 assert int(a2b[151645]) == 128009 and int(b2a[128009]) == 151645
 
-# total surrogate map: EVERY Qwen id -> some Llama id (exact where possible,
-# else first token of re-encoding its decoded text; last resort: llama eot).
+# Total surrogate map: every Llama id -> a Qwen id (exact where possible,
+# otherwise the first token after re-encoding; last resort: Qwen turn-end).
 # Makes drafter-side translation a total function (no -1 anywhere).
 b2a_sur = b2a.clone()
 miss = (b2a_sur < 0).nonzero(as_tuple=True)[0]

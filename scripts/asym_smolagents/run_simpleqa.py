@@ -1,5 +1,4 @@
-"""
-Demo 2: SimpleQA (OpenAI 2024) n=100 random sample, via smolagents CodeAgent + AsymSpec.
+"""SimpleQA evaluation with smolagents CodeAgent and AsymSpec.
 
 Replaces gated smolagents/benchmark-v1 with public SimpleQA — same purpose
 (short-form factual web-search QA, designed to be hard for frontier models).
@@ -48,42 +47,6 @@ def is_correct(ans: str, gold: str) -> bool:
     return g in a or a in g
 
 
-def build_model(mode: str, args):
-    """Returns (model, label)."""
-    common_kwargs = dict(
-        dtype="bfloat16", trust_remote_code=True,
-        max_model_len=args.max_model_len,
-        max_num_batched_tokens=args.max_model_len,
-        gpu_memory_utilization=0.85,
-        enforce_eager=False,
-    )
-    if mode == "asym_cda":
-        return AsymSpecVLLMModel(
-            model_id=args.llm, drafter_id=args.drafter,
-            K=args.K, gamma=args.gamma, beta=args.beta,
-            asym_method=args.asym_method,
-            main_compression=args.main_compression,
-            model_kwargs=common_kwargs,
-        )
-    elif mode in ("b1_main", "b1_aug"):
-        # Baseline: plain VLLMModel without speculative decoding.
-        # b1_main runs verifier on COMPRESSED context (we wrap to compress);
-        # b1_aug runs verifier on FULL context (no compression).
-        m = VLLMModel(model_id=args.llm, model_kwargs=common_kwargs)
-        # Tag for compression
-        m._asym_baseline_mode = mode
-        return m
-    raise ValueError(mode)
-
-
-def maybe_compress_for_baseline(model, messages):
-    """For b1_main baseline, compress messages the same way AsymSpec compresses."""
-    from asym_vllm_model import _compress_messages
-    if getattr(model, "_asym_baseline_mode", None) == "b1_main":
-        return _compress_messages(messages, "truncate")
-    return messages
-
-
 class CompressingVLLMModel(VLLMModel):
     """Plain VLLMModel that compresses messages before generation (Floor baseline)."""
     def __init__(self, *args, compression="truncate", skip_system_compress=True,
@@ -111,8 +74,8 @@ class CompressingVLLMModel(VLLMModel):
         return super().generate(compressed, **kw)
 
 
-def build_model_v2(mode: str, args):
-    """Cleaner mode dispatch."""
+def build_model(mode: str, args):
+    """Build AsymSpec, compressed-context, or full-context evaluation model."""
     common_kwargs = dict(
         dtype="bfloat16", trust_remote_code=True,
         max_model_len=args.max_model_len,
@@ -190,10 +153,10 @@ def main():
     ap.add_argument("--max_model_len", type=int, default=32768)
     ap.add_argument("--n", type=int, default=500, help="paper subset size")
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--out_dir", default="experiments/v010_smolagents_agent/demo2_benchmark100")
+    ap.add_argument("--out_dir", default="outputs/simpleqa")
     args = ap.parse_args()
 
-    print(f"=== Demo 2: SimpleQA n={args.n} mode={args.mode} ===")
+    print(f"=== SimpleQA n={args.n} mode={args.mode} ===")
     print(f"  main_compression: {args.main_compression}")
 
     # Load SimpleQA + sample
@@ -205,7 +168,7 @@ def main():
 
     # Build model + agent
     t0 = time.perf_counter()
-    model = build_model_v2(args.mode, args)
+    model = build_model(args.mode, args)
     init_elapsed = time.perf_counter() - t0
     print(f"[setup] model init: {init_elapsed:.1f}s")
 
@@ -242,7 +205,7 @@ def main():
             }, indent=2, default=str))
 
     n_correct = sum(r["correct"] for r in results)
-    print(f"\n=== Demo 2 done: mode={args.mode} acc={n_correct}/{len(results)} ===")
+    print(f"\n=== SimpleQA done: mode={args.mode} acc={n_correct}/{len(results)} ===")
     if hasattr(model, "get_diag_summary"):
         print(f"asym diag: {model.get_diag_summary()}")
     print(f"saved: {out_path}")

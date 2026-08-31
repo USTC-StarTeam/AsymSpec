@@ -1,6 +1,6 @@
 """LongBench v1: LLMLingua-2 extractive compression of x_main.
 
-Mirrors gen_lbv2_llmlingua.py / gen_lme_llmlingua.py but for LB v1's three
+Generates cached LLMLingua-2 contexts for LongBench's three
 multi-hop tasks (hotpotqa, 2wikimqa, musique, n=200 each → 600 total).
 Compresses each row's `context` to `--target_tokens` (default 1500 to
 match the summary cap), enabling apples-to-apples compression-method

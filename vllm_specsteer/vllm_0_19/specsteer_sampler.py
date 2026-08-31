@@ -22,9 +22,6 @@
 #   Only the fused reject-emission token changes; the acceptance gate
 #   (KL/JSD of aug‖base) is unaffected, isolating the δ-construction effect.
 #
-# Archived ablations (fmw_v2, selective, counterfactual, ar_feedback, rcma, far, vaa):
-#   see scripts/archive/specsteer_sampler_ablations.py
-
 from __future__ import annotations
 
 import os
